@@ -263,7 +263,38 @@ def get_available_instructors():
 
 # ==================== スケジュール API ====================
 
-def _parse_lessons(lessons, studio_id=None, program_id=None):
+# 予約可能なスペースIDのキャッシュ（space_detailsにnoフィールドがあるスペース）
+_reservable_space_ids_cache = None
+
+def _get_reservable_space_ids(client):
+    """予約可能なスペースIDを取得（space_detailsにnoフィールドがあるもの）"""
+    global _reservable_space_ids_cache
+    
+    if _reservable_space_ids_cache is not None:
+        return _reservable_space_ids_cache
+    
+    try:
+        response = client.get("/master/studio-room-spaces")
+        spaces = response.get("data", {}).get("studio_room_spaces", {}).get("list", [])
+        
+        reservable_ids = set()
+        for space in spaces:
+            space_details = space.get("space_details", [])
+            # space_detailsにnoフィールドがあるかチェック
+            has_no = any(detail.get("no") is not None for detail in space_details)
+            if has_no:
+                reservable_ids.add(space.get("id"))
+                logger.debug(f"Reservable space: ID={space.get('id')} name={space.get('name')}")
+        
+        _reservable_space_ids_cache = reservable_ids
+        logger.info(f"Found {len(reservable_ids)} reservable spaces: {reservable_ids}")
+        return reservable_ids
+    except Exception as e:
+        logger.warning(f"Failed to get reservable spaces: {e}, using fallback")
+        return {3}  # フォールバック
+
+
+def _parse_lessons(lessons, studio_id=None, program_id=None, reservable_space_ids=None):
     """レッスンデータを解析して整形"""
     result = []
     for lesson in lessons:
@@ -275,7 +306,13 @@ def _parse_lessons(lessons, studio_id=None, program_id=None):
         if program_id and lesson.get("program_id") != program_id:
             continue
         
-        capacity = lesson.get("capacity") or lesson.get("max_num") or 1
+        # 予約可能なスペースのみフィルタ（space_detailsにnoフィールドがあるスペース）
+        if reservable_space_ids:
+            space_id = lesson.get("studio_room_space_id")
+            if space_id and space_id not in reservable_space_ids:
+                continue
+        
+        capacity = lesson.get("capacity") or lesson.get("max_num") or 5  # デフォルト5枠
         reserved = lesson.get("reserved_count") or lesson.get("reserved_num") or 0
         
         result.append({
@@ -307,15 +344,19 @@ def get_schedule_all():
     studio_id = request.args.get("studio_id", type=int)
     program_id = request.args.get("program_id", type=int)
     
+    # 予約可能なスペースIDを取得
+    reservable_space_ids = _get_reservable_space_ids(client)
+    
     response = client.get_studio_lessons(None)
     lessons = response.get("data", {}).get("studio_lessons", {}).get("list", [])
     
-    result = _parse_lessons(lessons, studio_id, program_id)
+    result = _parse_lessons(lessons, studio_id, program_id, reservable_space_ids)
     
     return jsonify({
         "schedule": result,
         "total_count": len(result),
-        "note": "フィルタリングなし - 全期間のデータを返します"
+        "reservable_space_ids": list(reservable_space_ids),
+        "note": "予約可能なスペース（space_detailsにnoフィールドあり）のレッスンのみ表示"
     })
 
 
@@ -336,6 +377,9 @@ def get_schedule():
     if not end_date:
         end_date = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
     
+    # 予約可能なスペースIDを取得
+    reservable_space_ids = _get_reservable_space_ids(client)
+    
     # hacomono APIのdate_from/date_toクエリを使用
     query = {}
     if studio_id:
@@ -348,7 +392,7 @@ def get_schedule():
     )
     lessons = response.get("data", {}).get("studio_lessons", {}).get("list", [])
     
-    result = _parse_lessons(lessons, studio_id, program_id)
+    result = _parse_lessons(lessons, studio_id, program_id, reservable_space_ids)
     
     return jsonify({
         "schedule": result,
@@ -357,7 +401,8 @@ def get_schedule():
             "end_date": end_date,
             "studio_id": studio_id,
             "program_id": program_id
-        }
+        },
+        "reservable_space_ids": list(reservable_space_ids)
     })
 
 
@@ -374,7 +419,8 @@ def _parse_hacomono_error(error: HacomonoAPIError) -> dict:
         "RSV_000005": "予約に必要なチケットがありません。",
         "RSV_000001": "この枠は既に予約で埋まっています。",
         "CMN_000051": "必要な情報が不足しています。",
-        "CMN_000001": "システムエラーが発生しました。",
+        "CMN_000022": "このメールアドレスは既に使用されています。",
+        "CMN_000001": "システムエラーが発生しました。スペースの席設定（no）が正しくない可能性があります。",
     }
     
     for code, message in error_messages.items():
@@ -515,14 +561,15 @@ def create_reservation():
         }), 400
     
     # 2. レッスン情報を取得してno値を決定
-    space_no = "1"  # デフォルト値
+    space_no = None
+    space_has_valid_no = False
     try:
         lesson_response = client.get_studio_lesson(studio_lesson_id)
         lesson = lesson_response.get("data", {}).get("studio_lesson", {})
         studio_room_space_id = lesson.get("studio_room_space_id")
         logger.info(f"Lesson info: id={studio_lesson_id}, space_id={studio_room_space_id}, is_selectable_space={lesson.get('is_selectable_space')}")
         
-        # スペース情報を取得してno_labelを取得
+        # スペース情報を取得してno値を取得
         if studio_room_space_id:
             try:
                 studio_room_id = lesson.get("studio_room_id")
@@ -534,18 +581,24 @@ def create_reservation():
                     if space.get("id") == studio_room_space_id:
                         space_details = space.get("space_details", [])
                         if space_details:
-                            # space_detailsから最初の有効なnoを取得
+                            # space_detailsから最初の有効なnoを取得（noフィールドを優先）
                             for detail in space_details:
-                                no_val = detail.get("no_label") or detail.get("no")
-                                if no_val:
+                                no_val = detail.get("no")
+                                if no_val is not None:
                                     space_no = str(no_val)
+                                    space_has_valid_no = True
                                     break
-                            # no_labelがない場合はnoを確認
-                            if space_no == "1" and space_details:
-                                first_detail = space_details[0]
-                                if first_detail.get("no"):
-                                    space_no = str(first_detail.get("no"))
-                        logger.info(f"Found space: id={studio_room_space_id}, using no={space_no}")
+                            
+                            # noがない場合、no_labelはフォールバックとして使用するが警告を出す
+                            if not space_has_valid_no:
+                                for detail in space_details:
+                                    no_label = detail.get("no_label")
+                                    if no_label:
+                                        space_no = str(no_label)
+                                        logger.warning(f"Space {studio_room_space_id} has no_label but no 'no' field - may fail reservation")
+                                        break
+                        
+                        logger.info(f"Found space: id={studio_room_space_id}, no={space_no}, has_valid_no={space_has_valid_no}")
                         break
             except Exception as e:
                 logger.warning(f"Failed to get space details: {e}")
@@ -553,10 +606,24 @@ def create_reservation():
         # フロントエンドから指定された場合はそちらを優先
         if data.get("space_no"):
             space_no = data.get("space_no")
+            space_has_valid_no = True
             
     except HacomonoAPIError as e:
         logger.warning(f"Failed to get lesson info: {e}")
-        space_no = data.get("space_no", "1")
+        space_no = data.get("space_no")
+        if space_no:
+            space_has_valid_no = True
+    
+    # スペースに有効なnoがない場合はエラー
+    if not space_no or not space_has_valid_no:
+        logger.error(f"Space {studio_room_space_id} does not have valid 'no' field in space_details")
+        return jsonify({
+            "success": False,
+            "error": "このレッスン枠は予約できません",
+            "error_code": "SPACE_NO_MISSING",
+            "message": "スペースの席設定（no）が正しくありません。管理画面でスペースの席を正しく設定してください。",
+            "detail": f"space_id={studio_room_space_id} has no valid 'no' field in space_details"
+        }), 400
     
     # 3. 予約を作成
     reservation_data = {

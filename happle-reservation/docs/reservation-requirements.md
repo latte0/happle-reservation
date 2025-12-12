@@ -154,10 +154,35 @@ POST /reservation/reservations/reserve
 - **予約タイプ**: 「固定枠予約」に設定
 - `GET /master/studio-rooms` で確認
 
-#### ✅ 4. スタジオルームスペース（Studio Room Space）の設定
+#### ✅ 4. スタジオルームスペース（Studio Room Space）の設定 ⚠️重要
 - スペース（席・ベッド等）が作成されていること
-- `space_details` に `no_label` が設定されていること（予約時の `no` パラメータに使用）
+- **`space_details` に `no` フィールドが必要**（予約時の席番号として使用）
 - `GET /master/studio-room-spaces/{studio_room_id}` で確認
+
+```
+予約可能なスペースの条件:
+space_details に "no" フィールドがあること
+
+✅ 正しい例（Pilates Spaces）:
+space_details: [
+  {"no": 1, "coord_x": 0, "coord_y": 0},
+  {"no": 2, "coord_x": 1, "coord_y": 0},
+  {"no": 3, "coord_x": 2, "coord_y": 0}
+]
+→ 席番号 1, 2, 3 に予約可能
+
+❌ 間違った例（Bookom Space 10）:
+space_details: [
+  {"type": "POSITION", "coord_x": 0, "coord_y": 0, "no_label": "1"}
+]
+→ "no" がないため予約不可！
+```
+
+**`no` と `no_label` の違い:**
+| フィールド | 用途 | 予約時の使用 |
+|-----------|------|-------------|
+| `no` | 席番号（実データ） | ✅ 予約APIの `no` パラメータに使用 |
+| `no_label` | 表示用ラベル | ❌ 予約には使えない |
 
 #### ✅ 5. スタッフ（Instructor）の設定
 - スタッフが登録され、有効になっていること
@@ -196,8 +221,28 @@ POST /reservation/reservations/reserve
 | エラーコード | メッセージ | 原因・対処 |
 |-------------|----------|-----------|
 | `CMN_000051` | 必須パラメータが含まれていません | 上記必須パラメータを確認 |
+| `CMN_000001` | エラーが発生しました | スペースの `space_details` に `no` がない可能性 |
 | `RSV_000005` | チケットが不足しています | メンバーにチケットを付与する |
 | `RSV_000309` | 営業時間外の日時を指定することはできません | レッスン枠の日時が営業時間内か確認 |
+| `SPACE_NO_MISSING` | 席番号が設定されていません | スペースの設定を修正（下記参照） |
+
+### スペース設定エラーの対処法
+
+`CMN_000001`（汎用エラー）が出る場合、スペースの席設定が原因の可能性があります：
+
+1. **管理画面でスペース設定を確認**
+   - 設定 → スタジオルームスペース
+   - 該当スペースの編集画面を開く
+
+2. **席を正しく追加**
+   - 席を追加し、番号（no）を設定
+   - 例: 席1, 席2, 席3...
+
+3. **APIで確認**
+```bash
+GET /master/studio-room-spaces/{space_id}
+# space_details に "no" フィールドがあるか確認
+```
 
 ---
 
@@ -414,6 +459,22 @@ curl -X POST "https://happle.admin.egw.hacomono.app/api/v2/reservation/reservati
 
 ## 6. よくあるトラブルと解決策
 
+### Q: 「エラーが発生しました」（CMN_000001）が出る
+
+**A**: スペースの席設定が原因の可能性が高いです：
+
+1. **スペースの `space_details` に `no` フィールドがあるか確認**
+```bash
+GET /master/studio-room-spaces/{space_id}
+```
+
+2. **`no` がない場合は管理画面で設定**
+   - 設定 → スタジオルームスペース → 該当スペース
+   - 席を追加（no=1, no=2, ...）
+
+3. **バックエンドは `no` があるスペースのレッスンのみ表示**
+   - 自動的にフィルタリングされます
+
 ### Q: 「営業時間外」エラーが出る
 
 **A**: 以下を順番にチェック：
@@ -434,4 +495,16 @@ curl -X POST "https://happle.admin.egw.hacomono.app/api/v2/reservation/reservati
 ### Q: 同じメンバーで予約が重複する
 
 **A**: 新しいメンバーを作成するか、別の時間帯を選択する。
+
+### Q: レッスン枠が表示されない
+
+**A**: スペースの席設定（`no`フィールド）がないレッスンは自動的にフィルタされます：
+
+1. **APIでスペースを確認**
+```bash
+GET /master/studio-room-spaces
+# space_details に "no" があるスペースのみ予約可能
+```
+
+2. **予約可能なスペースを使用したレッスン枠を作成**
 
