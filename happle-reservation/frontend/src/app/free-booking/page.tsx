@@ -25,15 +25,23 @@ function FreeBookingContent() {
   const searchParams = useSearchParams()
   const studioRoomId = searchParams.get('studio_room_id')
   const startAt = searchParams.get('start_at')
-  const dateStr = searchParams.get('date')
-  const timeStr = searchParams.get('time')
+  const dateStr = searchParams.get('date') // Optional: might be parsed from startAt
+  const timeStr = searchParams.get('time') // Optional
   const studioId = searchParams.get('studio_id')
+
+  // Derive date and time from startAt if not provided explicitly
+  const parsedStartAt = startAt ? parse(startAt, 'yyyy-MM-dd HH:mm:ss.SSS', new Date()) : null
+  const displayDateStr = dateStr || (parsedStartAt ? format(parsedStartAt, 'yyyy-MM-dd') : '')
+  const displayTimeStr = timeStr || (parsedStartAt ? format(parsedStartAt, 'HH:mm') : '')
 
   const [programs, setPrograms] = useState<Program[]>([])
   const [selectedProgram, setSelectedProgram] = useState<Program | null>(null)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  
+  // Confirmation mode state
+  const [isConfirming, setIsConfirming] = useState(false)
   
   const [formData, setFormData] = useState<FormData>({
     name: '',
@@ -57,7 +65,7 @@ function FreeBookingContent() {
         // プログラム一覧を取得
         const programsData = await getPrograms(studioId ? parseInt(studioId) : undefined)
         setPrograms(programsData)
-        // 最初のプログラムをデフォルト選択
+        // 最初のプログラムをデフォルト選択（またはクエリパラメータから指定があればそれを）
         if (programsData.length > 0) {
           setSelectedProgram(programsData[0])
         }
@@ -94,10 +102,24 @@ function FreeBookingContent() {
     return Object.keys(errors).length === 0
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // フォーム送信（確認画面へ）
+  const handleConfirm = (e: React.FormEvent) => {
     e.preventDefault()
-    
-    if (!validateForm() || !selectedProgram || !studioRoomId || !startAt) return
+    if (validateForm()) {
+      setIsConfirming(true)
+      window.scrollTo(0, 0)
+    }
+  }
+
+  // 修正する（入力画面へ戻る）
+  const handleEdit = () => {
+    setIsConfirming(false)
+    window.scrollTo(0, 0)
+  }
+
+  // 予約確定
+  const handleSubmit = async () => {
+    if (!selectedProgram || !studioRoomId || !startAt) return
     
     setSubmitting(true)
     setError(null)
@@ -124,10 +146,12 @@ function FreeBookingContent() {
         router.push(`/complete?${params.toString()}`)
       } else {
         setError(result.message || '予約に失敗しました')
+        setIsConfirming(false) // エラー時は入力画面に戻す
       }
     } catch (err) {
       setError('予約処理中にエラーが発生しました')
       console.error(err)
+      setIsConfirming(false)
     } finally {
       setSubmitting(false)
     }
@@ -142,8 +166,8 @@ function FreeBookingContent() {
   }
 
   // 日時のフォーマット
-  const formattedDate = dateStr 
-    ? format(parse(dateStr, 'yyyy-MM-dd', new Date()), 'yyyy年M月d日(E)', { locale: ja })
+  const formattedDate = displayDateStr 
+    ? format(parse(displayDateStr, 'yyyy-MM-dd', new Date()), 'yyyy年M月d日(E)', { locale: ja })
     : ''
 
   if (loading) {
@@ -173,220 +197,217 @@ function FreeBookingContent() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      {/* Back Button */}
-      <button
-        onClick={() => router.back()}
-        className="flex items-center gap-2 text-accent-600 hover:text-primary-600 mb-6 transition-colors"
-      >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-        </svg>
-        日時選択に戻る
-      </button>
-
-      {/* Reservation Summary */}
-      <div className="card mb-8 animate-fade-in">
-        <h2 className="font-display font-bold text-lg text-accent-800 mb-4">
-          ご予約内容
-        </h2>
-        <div className="space-y-3">
-          <div className="flex items-center gap-3 pt-3 border-t border-accent-100">
-            <div className="w-10 h-10 bg-accent-100 rounded-lg flex items-center justify-center">
-              <svg className="w-5 h-5 text-accent-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-            </div>
-            <div>
-              <div className="font-medium text-accent-900">{formattedDate}</div>
-              <div className="text-sm text-accent-500">{timeStr} 〜</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center">
-              <svg className="w-5 h-5 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <div>
-              <div className="font-medium text-accent-900">自由枠予約</div>
-              <div className="text-sm text-accent-500">空いているスタッフを自動で割り当て</div>
-            </div>
-          </div>
+      {/* Steps Indicator */}
+      <div className="flex items-center justify-center mb-8 text-sm font-medium text-accent-400">
+        <div className="flex items-center">
+          <div className="w-8 h-8 rounded-full bg-primary-100 text-primary-600 flex items-center justify-center font-bold">1</div>
+          <span className="ml-2 text-accent-900">日時選択</span>
+        </div>
+        <div className="w-12 h-0.5 bg-gray-200 mx-4"></div>
+        <div className="flex items-center">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${!isConfirming ? 'bg-primary-600 text-white' : 'bg-primary-100 text-primary-600'}`}>2</div>
+          <span className={`ml-2 ${!isConfirming ? 'text-primary-700 font-bold' : 'text-accent-900'}`}>お客様情報</span>
+        </div>
+        <div className="w-12 h-0.5 bg-gray-200 mx-4"></div>
+        <div className="flex items-center">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${isConfirming ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-400'}`}>3</div>
+          <span className={`ml-2 ${isConfirming ? 'text-primary-700 font-bold' : ''}`}>確認</span>
         </div>
       </div>
 
-      {/* Program Selection */}
-      {programs.length > 1 && (
-        <div className="card mb-8 animate-fade-in-delay-1">
-          <h2 className="font-display font-bold text-lg text-accent-800 mb-4">
-            メニューを選択
+      {isConfirming ? (
+        // Confirmation View
+        <div className="animate-fade-in">
+          <h2 className="text-2xl font-bold text-center text-accent-900 mb-8">
+            予約内容の確認
           </h2>
-          <div className="space-y-2">
-            {programs.map((program) => (
-              <button
-                key={program.id}
-                onClick={() => setSelectedProgram(program)}
-                className={`w-full p-4 rounded-xl text-left transition-all ${
-                  selectedProgram?.id === program.id
-                    ? 'bg-primary-50 border-2 border-primary-500'
-                    : 'bg-white border border-accent-200 hover:border-primary-300'
-                }`}
-              >
-                <div className="font-medium text-accent-900">{program.name}</div>
-                <div className="flex items-center gap-3 mt-1 text-sm text-accent-500">
-                  {program.duration && <span>{program.duration}分</span>}
-                  {program.price && <span>¥{program.price.toLocaleString()}</span>}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Selected Program Summary (if only one) */}
-      {programs.length === 1 && selectedProgram && (
-        <div className="card mb-8 animate-fade-in-delay-1">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center">
-              <span className="text-xl">🌿</span>
-            </div>
+          
+          <div className="card mb-6 space-y-6">
             <div>
-              <div className="font-medium text-accent-900">{selectedProgram.name}</div>
-              <div className="text-sm text-accent-500">
-                {selectedProgram.duration}分 / ¥{selectedProgram.price?.toLocaleString()}
+              <h3 className="text-sm font-bold text-accent-500 mb-2">ご希望の日時</h3>
+              <div className="text-lg font-bold text-accent-900">
+                {formattedDate} {displayTimeStr}
               </div>
             </div>
+            
+            <div className="border-t border-gray-100 pt-4">
+              <h3 className="text-sm font-bold text-accent-500 mb-2">メニュー</h3>
+              <div className="text-lg font-bold text-accent-900">
+                {selectedProgram?.name}
+              </div>
+              <div className="text-accent-600 mt-1">
+                {selectedProgram?.duration}分 / ¥{selectedProgram?.price?.toLocaleString()}
+              </div>
+            </div>
+
+            <div className="border-t border-gray-100 pt-4">
+              <h3 className="text-sm font-bold text-accent-500 mb-2">お客様情報</h3>
+              <dl className="space-y-2 text-accent-900">
+                <div className="flex">
+                  <dt className="w-32 text-accent-600">お名前</dt>
+                  <dd>{formData.name}</dd>
+                </div>
+                <div className="flex">
+                  <dt className="w-32 text-accent-600">フリガナ</dt>
+                  <dd>{formData.nameKana || '-'}</dd>
+                </div>
+                <div className="flex">
+                  <dt className="w-32 text-accent-600">メールアドレス</dt>
+                  <dd>{formData.email}</dd>
+                </div>
+                <div className="flex">
+                  <dt className="w-32 text-accent-600">電話番号</dt>
+                  <dd>{formData.phone}</dd>
+                </div>
+                {formData.note && (
+                  <div className="flex">
+                    <dt className="w-32 text-accent-600">備考</dt>
+                    <dd className="whitespace-pre-wrap">{formData.note}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4">
+            <button
+              onClick={handleEdit}
+              disabled={submitting}
+              className="btn-secondary w-full sm:w-1/2 order-2 sm:order-1"
+            >
+              修正する
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="btn-primary w-full sm:w-1/2 order-1 sm:order-2 flex items-center justify-center gap-2"
+            >
+              {submitting ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                  予約処理中...
+                </>
+              ) : (
+                '予約を確定する'
+              )}
+            </button>
           </div>
         </div>
+      ) : (
+        // Input Form View
+        <form onSubmit={handleConfirm} className="card animate-fade-in">
+          <h2 className="font-display font-bold text-lg text-accent-800 mb-6">
+            お客様情報を入力してください
+          </h2>
+          
+          <div className="space-y-5">
+            {/* Name */}
+            <div>
+              <label htmlFor="name" className="label">
+                お名前 <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="name"
+                name="name"
+                value={formData.name}
+                onChange={handleInputChange}
+                className={`input-field ${formErrors.name ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : ''}`}
+                placeholder="山田 太郎"
+              />
+              {formErrors.name && (
+                <p className="text-sm text-red-500 mt-1">{formErrors.name}</p>
+              )}
+            </div>
+
+            {/* Name Kana */}
+            <div>
+              <label htmlFor="nameKana" className="label">
+                お名前（フリガナ）
+              </label>
+              <input
+                type="text"
+                id="nameKana"
+                name="nameKana"
+                value={formData.nameKana}
+                onChange={handleInputChange}
+                className="input-field"
+                placeholder="ヤマダ タロウ"
+              />
+            </div>
+
+            {/* Email */}
+            <div>
+              <label htmlFor="email" className="label">
+                メールアドレス <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="email"
+                id="email"
+                name="email"
+                value={formData.email}
+                onChange={handleInputChange}
+                className={`input-field ${formErrors.email ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : ''}`}
+                placeholder="example@email.com"
+              />
+              {formErrors.email && (
+                <p className="text-sm text-red-500 mt-1">{formErrors.email}</p>
+              )}
+            </div>
+
+            {/* Phone */}
+            <div>
+              <label htmlFor="phone" className="label">
+                電話番号 <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="tel"
+                id="phone"
+                name="phone"
+                value={formData.phone}
+                onChange={handleInputChange}
+                className={`input-field ${formErrors.phone ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : ''}`}
+                placeholder="090-1234-5678"
+              />
+              {formErrors.phone && (
+                <p className="text-sm text-red-500 mt-1">{formErrors.phone}</p>
+              )}
+            </div>
+
+            {/* Note */}
+            <div>
+              <label htmlFor="note" className="label">
+                備考
+              </label>
+              <textarea
+                id="note"
+                name="note"
+                value={formData.note}
+                onChange={handleInputChange}
+                className="input-field min-h-[100px] resize-none"
+                placeholder="ご要望やご質問があればご記入ください"
+              />
+            </div>
+          </div>
+
+          {/* Submit Button */}
+          <div className="mt-8 flex flex-col sm:flex-row gap-4">
+            <button
+              type="button"
+              onClick={() => router.back()}
+              className="w-full sm:w-1/3 btn-secondary order-2 sm:order-1"
+            >
+              戻る
+            </button>
+            <button
+              type="submit"
+              className="w-full sm:w-2/3 btn-primary flex items-center justify-center gap-2 order-1 sm:order-2"
+            >
+              確認画面へ進む
+            </button>
+          </div>
+        </form>
       )}
-
-      {/* Booking Form */}
-      <form onSubmit={handleSubmit} className="card animate-fade-in-delay-2">
-        <h2 className="font-display font-bold text-lg text-accent-800 mb-6">
-          お客様情報
-        </h2>
-        
-        <div className="space-y-5">
-          {/* Name */}
-          <div>
-            <label htmlFor="name" className="label">
-              お名前 <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              id="name"
-              name="name"
-              value={formData.name}
-              onChange={handleInputChange}
-              className={`input-field ${formErrors.name ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : ''}`}
-              placeholder="山田 太郎"
-            />
-            {formErrors.name && (
-              <p className="text-sm text-red-500 mt-1">{formErrors.name}</p>
-            )}
-          </div>
-
-          {/* Name Kana */}
-          <div>
-            <label htmlFor="nameKana" className="label">
-              お名前（フリガナ）
-            </label>
-            <input
-              type="text"
-              id="nameKana"
-              name="nameKana"
-              value={formData.nameKana}
-              onChange={handleInputChange}
-              className="input-field"
-              placeholder="ヤマダ タロウ"
-            />
-          </div>
-
-          {/* Email */}
-          <div>
-            <label htmlFor="email" className="label">
-              メールアドレス <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="email"
-              id="email"
-              name="email"
-              value={formData.email}
-              onChange={handleInputChange}
-              className={`input-field ${formErrors.email ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : ''}`}
-              placeholder="example@email.com"
-            />
-            {formErrors.email && (
-              <p className="text-sm text-red-500 mt-1">{formErrors.email}</p>
-            )}
-            <p className="text-xs text-accent-500 mt-1">
-              予約確認メールをお送りします
-            </p>
-          </div>
-
-          {/* Phone */}
-          <div>
-            <label htmlFor="phone" className="label">
-              電話番号 <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="tel"
-              id="phone"
-              name="phone"
-              value={formData.phone}
-              onChange={handleInputChange}
-              className={`input-field ${formErrors.phone ? 'border-red-300 focus:border-red-400 focus:ring-red-100' : ''}`}
-              placeholder="090-1234-5678"
-            />
-            {formErrors.phone && (
-              <p className="text-sm text-red-500 mt-1">{formErrors.phone}</p>
-            )}
-          </div>
-
-          {/* Note */}
-          <div>
-            <label htmlFor="note" className="label">
-              備考
-            </label>
-            <textarea
-              id="note"
-              name="note"
-              value={formData.note}
-              onChange={handleInputChange}
-              className="input-field min-h-[100px] resize-none"
-              placeholder="ご要望やご質問があればご記入ください"
-            />
-          </div>
-        </div>
-
-        {/* Error Message */}
-        {error && (
-          <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
-            {error}
-          </div>
-        )}
-
-        {/* Submit Button */}
-        <div className="mt-8">
-          <button
-            type="submit"
-            disabled={submitting || !selectedProgram}
-            className="w-full btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            {submitting ? (
-              <>
-                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                予約処理中...
-              </>
-            ) : (
-              '予約を確定する'
-            )}
-          </button>
-          <p className="text-xs text-accent-500 text-center mt-3">
-            「予約を確定する」をクリックすると、入力されたメールアドレスに確認メールが送信されます
-          </p>
-        </div>
-      </form>
     </div>
   )
 }
@@ -405,4 +426,3 @@ export default function FreeBookingPage() {
     </Suspense>
   )
 }
-

@@ -45,13 +45,8 @@ export default function HomePage() {
   }
 
   const handleFreeReservation = () => {
-    const params = new URLSearchParams()
-    // Test Room (自由枠予約) の studio_room_id
-    params.set('studio_room_id', '3')
-    if (selectedStudio) {
-      params.set('studio_id', selectedStudio.toString())
-    }
-    router.push(`/free-schedule?${params.toString()}`)
+    // 自由枠予約ページへ直接遷移（店舗・メニューは遷移先で選択）
+    router.push(`/free-schedule`)
   }
 
   if (loading) {
@@ -161,7 +156,7 @@ export default function HomePage() {
       </section>
 
       {/* Studio Selection */}
-      {studios.length > 1 && reservationType && (
+      {studios.length > 1 && reservationType === 'fixed' && (
         <section className="mb-10 animate-fade-in">
           <h3 className="font-display text-xl font-bold text-accent-800 mb-4">
             店舗を選択
