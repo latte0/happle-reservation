@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Flask アプリケーション
 app = Flask(__name__)
+app.json.ensure_ascii = False  # 日本語をUnicodeエスケープしない
 
 # CORS設定
 CORS(app, origins=os.environ.get("CORS_ORIGINS", "*").split(","))
@@ -482,6 +483,7 @@ def create_reservation():
     except HacomonoAPIError as e:
         error_info = _parse_hacomono_error(e)
         logger.error(f"Failed to create member: {e}")
+        logger.error(f"Member creation API response body: {e.response_body}")
         return jsonify({
             "success": False,
             "error": "ゲスト情報の登録に失敗しました",
@@ -497,14 +499,48 @@ def create_reservation():
         }), 400
     
     # 2. レッスン情報を取得してno値を決定
+    space_no = "1"  # デフォルト値
     try:
         lesson_response = client.get_studio_lesson(studio_lesson_id)
         lesson = lesson_response.get("data", {}).get("studio_lesson", {})
-        space_no = data.get("space_no", "1")
-        logger.info(f"Lesson info: id={studio_lesson_id}, is_selectable_space={lesson.get('is_selectable_space')}")
+        studio_room_space_id = lesson.get("studio_room_space_id")
+        logger.info(f"Lesson info: id={studio_lesson_id}, space_id={studio_room_space_id}, is_selectable_space={lesson.get('is_selectable_space')}")
+        
+        # スペース情報を取得してno_labelを取得
+        if studio_room_space_id:
+            try:
+                studio_room_id = lesson.get("studio_room_id")
+                spaces_response = client.get_studio_room_spaces(studio_room_id)
+                spaces = spaces_response.get("data", {}).get("studio_room_spaces", {}).get("list", [])
+                
+                # 対象のスペースを探す
+                for space in spaces:
+                    if space.get("id") == studio_room_space_id:
+                        space_details = space.get("space_details", [])
+                        if space_details:
+                            # space_detailsから最初の有効なnoを取得
+                            for detail in space_details:
+                                no_val = detail.get("no_label") or detail.get("no")
+                                if no_val:
+                                    space_no = str(no_val)
+                                    break
+                            # no_labelがない場合はnoを確認
+                            if space_no == "1" and space_details:
+                                first_detail = space_details[0]
+                                if first_detail.get("no"):
+                                    space_no = str(first_detail.get("no"))
+                        logger.info(f"Found space: id={studio_room_space_id}, using no={space_no}")
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to get space details: {e}")
+        
+        # フロントエンドから指定された場合はそちらを優先
+        if data.get("space_no"):
+            space_no = data.get("space_no")
+            
     except HacomonoAPIError as e:
         logger.warning(f"Failed to get lesson info: {e}")
-        space_no = "1"
+        space_no = data.get("space_no", "1")
     
     # 3. 予約を作成
     reservation_data = {
@@ -524,6 +560,7 @@ def create_reservation():
     except HacomonoAPIError as e:
         error_info = _parse_hacomono_error(e)
         logger.error(f"Failed to create reservation: {e}")
+        logger.error(f"API response body: {e.response_body}")
         return jsonify({
             "success": False,
             "error": "予約の作成に失敗しました",

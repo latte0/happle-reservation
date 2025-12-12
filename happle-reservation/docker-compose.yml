@@ -15,6 +15,7 @@ services:
       - HACOMONO_CLIENT_SECRET=XkfcnIIK54ttdjGnaugLQUB4trTpGFmkyJF3q0nxrKk
       - HACOMONO_ACCESS_TOKEN=${HACOMONO_ACCESS_TOKEN}
       - HACOMONO_REFRESH_TOKEN=${HACOMONO_REFRESH_TOKEN}
+      - CORS_ORIGINS=http://localhost:3002,http://localhost:3000,https://happle-reservation-frontend.onrender.com
     volumes:
       - ./backend:/app
     command: python app.py

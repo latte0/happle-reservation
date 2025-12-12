@@ -280,6 +280,10 @@ class HacomonoClient:
         """スタジオルームを取得"""
         return self.get(f"/master/studio-rooms/{studio_room_id}")
     
+    def get_studio_room_spaces(self, studio_room_id: int) -> Dict[str, Any]:
+        """スタジオルームのスペース一覧を取得"""
+        return self.get(f"/master/studio-room-spaces/{studio_room_id}")
+    
     # ==================== 会員 API ====================
     
     def get_members(self, query: Optional[Dict] = None) -> Dict[str, Any]:
