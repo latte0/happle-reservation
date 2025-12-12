@@ -280,9 +280,16 @@ class HacomonoClient:
         """スタジオルームを取得"""
         return self.get(f"/master/studio-rooms/{studio_room_id}")
     
-    def get_studio_room_spaces(self, studio_room_id: int) -> Dict[str, Any]:
+    def get_studio_room_spaces(self, studio_room_id: int = None) -> Dict[str, Any]:
         """スタジオルームのスペース一覧を取得"""
-        return self.get(f"/master/studio-room-spaces/{studio_room_id}")
+        params = {}
+        if studio_room_id:
+            params["query"] = json.dumps({"studio_room_id": studio_room_id})
+        return self.get("/master/studio-room-spaces", params=params)
+    
+    def get_studio_room_space(self, space_id: int) -> Dict[str, Any]:
+        """単一スペースを取得"""
+        return self.get(f"/master/studio-room-spaces/{space_id}")
     
     # ==================== 会員 API ====================
     
