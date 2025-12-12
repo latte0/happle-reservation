@@ -207,24 +207,9 @@ def get_schedule():
     
     lessons = response.get("data", {}).get("studio_lessons", {}).get("list", [])
     
-    # 日付とフィルタリング
-    from datetime import datetime as dt
-    start_dt = dt.strptime(start_date, "%Y-%m-%d")
-    end_dt = dt.strptime(end_date, "%Y-%m-%d")
-    
-    # 必要な情報のみ抽出
+    # 必要な情報のみ抽出（日付フィルタは一時的に無効化 - テスト用）
     result = []
     for lesson in lessons:
-        # 日付フィルタリング
-        lesson_start = lesson.get("start_at", "")
-        if lesson_start:
-            try:
-                lesson_dt = dt.fromisoformat(lesson_start.replace("+09:00", ""))
-                if not (start_dt <= lesson_dt <= end_dt + timedelta(days=1)):
-                    continue
-            except:
-                pass
-        
         # studio_idフィルタ
         if studio_id and lesson.get("studio_id") != studio_id:
             continue
