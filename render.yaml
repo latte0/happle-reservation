@@ -1,0 +1,53 @@
+# Render Blueprint for Happle Reservation System
+# Deploy: https://render.com/docs/infrastructure-as-code
+
+services:
+  # Backend API (Flask)
+  - type: web
+    name: happle-reservation-backend
+    runtime: python
+    plan: starter
+    rootDir: happle-reservation/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 --access-logfile - --error-logfile - app:app
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: FLASK_ENV
+        value: production
+      # hacomono API設定
+      - key: HACOMONO_BRAND_CODE
+        value: happle
+      - key: HACOMONO_ADMIN_DOMAIN
+        value: happle-admin.hacomono.jp
+      - key: HACOMONO_ACCESS_TOKEN
+        sync: false
+      - key: HACOMONO_REFRESH_TOKEN
+        sync: false
+      - key: HACOMONO_CLIENT_ID
+        sync: false
+      - key: HACOMONO_CLIENT_SECRET
+        sync: false
+      # CORS設定
+      - key: CORS_ORIGINS
+        value: https://happle-reservation-frontend.onrender.com
+
+  # Frontend (Next.js with Docker)
+  - type: web
+    name: happle-reservation-frontend
+    runtime: docker
+    plan: starter
+    rootDir: happle-reservation/frontend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      # Backend API URL
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: happle-reservation-backend
+          property: hostport
+        # 注意: Render では fromService で https:// は自動付与されないため
+        # 実際には手動で設定: https://happle-reservation-backend.onrender.com
+
