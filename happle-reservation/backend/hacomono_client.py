@@ -204,12 +204,43 @@ class HacomonoClient:
         """プログラムを取得"""
         return self.get(f"/master/programs/{program_id}")
     
-    def get_studio_lessons(self, query: Optional[Dict] = None) -> Dict[str, Any]:
-        """レッスンスケジュール一覧を取得"""
-        params = {}
+    def get_studio_lessons(self, query: Optional[Dict] = None, fetch_all: bool = True) -> Dict[str, Any]:
+        """レッスンスケジュール一覧を取得
+        
+        Args:
+            query: 検索クエリ
+            fetch_all: Trueの場合、全ページを取得して結合
+        """
+        params = {"length": 100}  # 1ページあたり最大100件
         if query:
             params["query"] = json.dumps(query)
-        return self.get("/master/studio-lessons", params=params)
+        
+        # 最初のページを取得
+        result = self.get("/master/studio-lessons", params=params)
+        
+        if not fetch_all:
+            return result
+        
+        # 全ページを取得
+        all_lessons = result.get("data", {}).get("studio_lessons", {}).get("list", [])
+        total_count = result.get("data", {}).get("studio_lessons", {}).get("total_count", 0)
+        total_pages = result.get("data", {}).get("studio_lessons", {}).get("total_page", 1)
+        
+        logger.info(f"Fetching studio lessons: total_count={total_count}, total_pages={total_pages}")
+        
+        # 2ページ目以降を取得
+        for page in range(2, total_pages + 1):
+            params["page"] = page
+            page_result = self.get("/master/studio-lessons", params=params)
+            page_lessons = page_result.get("data", {}).get("studio_lessons", {}).get("list", [])
+            all_lessons.extend(page_lessons)
+            logger.info(f"Fetched page {page}: {len(page_lessons)} lessons")
+        
+        # 結果を再構築
+        result["data"]["studio_lessons"]["list"] = all_lessons
+        result["data"]["studio_lessons"]["length"] = len(all_lessons)
+        
+        return result
     
     def get_studio_lesson(self, studio_lesson_id: int) -> Dict[str, Any]:
         """レッスンスケジュールを取得"""
