@@ -196,44 +196,65 @@ def get_schedule():
     start_date = request.args.get("start_date")  # YYYY-MM-DD
     end_date = request.args.get("end_date")  # YYYY-MM-DD
     
-    # デフォルトは今日から7日間
+    # デフォルトは今日から14日間
     if not start_date:
         start_date = datetime.now().strftime("%Y-%m-%d")
     if not end_date:
-        end_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        end_date = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
     
-    query = {
-        "is_active": True,
-        "start_date": start_date,
-        "end_date": end_date
-    }
-    
-    if studio_id:
-        query["studio_id"] = studio_id
-    if program_id:
-        query["program_id"] = program_id
+    # hacomono APIはシンプルなクエリのみ対応
+    query = {"page": 1}
     
     response = client.get_studio_lessons(query)
     
     lessons = response.get("data", {}).get("studio_lessons", {}).get("list", [])
     
+    # 日付とフィルタリング
+    from datetime import datetime as dt
+    start_dt = dt.strptime(start_date, "%Y-%m-%d")
+    end_dt = dt.strptime(end_date, "%Y-%m-%d")
+    
     # 必要な情報のみ抽出
     result = []
     for lesson in lessons:
+        # 日付フィルタリング
+        lesson_start = lesson.get("start_at", "")
+        if lesson_start:
+            try:
+                lesson_dt = dt.fromisoformat(lesson_start.replace("+09:00", ""))
+                if not (start_dt <= lesson_dt <= end_dt + timedelta(days=1)):
+                    continue
+            except:
+                pass
+        
+        # studio_idフィルタ
+        if studio_id and lesson.get("studio_id") != studio_id:
+            continue
+        
+        # program_idフィルタ
+        if program_id and lesson.get("program_id") != program_id:
+            continue
+        
+        capacity = lesson.get("capacity") or lesson.get("max_num") or 1
+        reserved = lesson.get("reserved_count") or lesson.get("reserved_num") or 0
+        
         result.append({
             "id": lesson.get("id"),
             "studio_id": lesson.get("studio_id"),
             "program_id": lesson.get("program_id"),
-            "program_name": lesson.get("program_name"),
+            "program_name": lesson.get("program", {}).get("name") if isinstance(lesson.get("program"), dict) else None,
             "instructor_id": lesson.get("instructor_id"),
-            "instructor_name": lesson.get("instructor_name"),
+            "instructor_name": lesson.get("instructor", {}).get("name") if isinstance(lesson.get("instructor"), dict) else None,
             "start_at": lesson.get("start_at"),
             "end_at": lesson.get("end_at"),
-            "capacity": lesson.get("capacity"),
-            "reserved_count": lesson.get("reserved_count", 0),
-            "available": lesson.get("capacity", 0) - lesson.get("reserved_count", 0),
-            "is_reservable": lesson.get("is_reservable", True)
+            "capacity": capacity,
+            "reserved_count": reserved,
+            "available": max(0, capacity - reserved),
+            "is_reservable": lesson.get("is_reservable", True) and (capacity - reserved) > 0
         })
+    
+    # 日付順でソート
+    result.sort(key=lambda x: x.get("start_at", ""))
     
     return jsonify({"schedule": result})
 
