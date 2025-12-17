@@ -1,14 +1,101 @@
 'use client'
 
-import { Suspense } from 'react'
+import { Suspense, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { sendGTMEvent } from '@next/third-parties/google'
+
+// DataLayer用の型定義
+declare global {
+  interface Window {
+    dataLayer?: Record<string, unknown>[]
+  }
+}
 
 function CompleteContent() {
   const searchParams = useSearchParams()
+  
+  // 予約情報
   const reservationId = searchParams.get('reservation_id')
   const name = searchParams.get('name')
   const email = searchParams.get('email')
+  
+  // 追加の計測情報
+  const studioId = searchParams.get('studio_id')
+  const studioCode = searchParams.get('studio_code')
+  const studioName = searchParams.get('studio_name')
+  const programId = searchParams.get('program_id')
+  const programName = searchParams.get('program_name')
+  const reservationDate = searchParams.get('reservation_date')
+  const reservationTime = searchParams.get('reservation_time')
+  const duration = searchParams.get('duration')
+  const price = searchParams.get('price')
+  
+  // UTMパラメータ
+  const utmSource = searchParams.get('utm_source')
+  const utmMedium = searchParams.get('utm_medium')
+  const utmCampaign = searchParams.get('utm_campaign')
+
+  // GTM DataLayer push - 予約完了イベント
+  useEffect(() => {
+    // @next/third-partiesのsendGTMEventを使用
+    sendGTMEvent({
+      event: 'reservation_complete',
+      reservation_id: reservationId,
+      studio_id: studioId,
+      studio_code: studioCode,
+      studio_name: studioName,
+      program_id: programId,
+      program_name: programName,
+      reservation_date: reservationDate,
+      reservation_time: reservationTime,
+      duration: duration,
+      price: price,
+      customer_name: name,
+      customer_email: email,
+      utm_source: utmSource,
+      utm_medium: utmMedium,
+      utm_campaign: utmCampaign,
+    })
+    
+    // フォールバック: window.dataLayerに直接push（GTM IDが未設定の場合も動作確認可能）
+    if (typeof window !== 'undefined') {
+      window.dataLayer = window.dataLayer || []
+      window.dataLayer.push({
+        event: 'reservation_complete',
+        reservation_id: reservationId,
+        studio_id: studioId,
+        studio_code: studioCode,
+        studio_name: studioName,
+        program_id: programId,
+        program_name: programName,
+        reservation_date: reservationDate,
+        reservation_time: reservationTime,
+        duration: duration,
+        price: price,
+        customer_name: name,
+        customer_email: email,
+        utm_source: utmSource,
+        utm_medium: utmMedium,
+        utm_campaign: utmCampaign,
+      })
+      
+      // デバッグ用ログ
+      console.log('[GTM] reservation_complete event pushed:', {
+        reservation_id: reservationId,
+        studio_id: studioId,
+        studio_code: studioCode,
+        program_id: programId,
+      })
+    }
+  }, [reservationId, studioId, studioCode, studioName, programId, programName, 
+      reservationDate, reservationTime, duration, price, name, email,
+      utmSource, utmMedium, utmCampaign])
+
+  // 予約確認ページのURL
+  const reservationDetailUrl = reservationId 
+    ? `/reservation-detail?reservation_id=${reservationId}` 
+    : null
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-12">
@@ -53,6 +140,32 @@ function CompleteContent() {
               <span className="font-medium text-accent-900">{name} 様</span>
             </div>
           )}
+          {studioName && (
+            <div className="flex justify-between py-2 border-b border-accent-100">
+              <span className="text-accent-500">店舗</span>
+              <span className="font-medium text-accent-900">{studioName}</span>
+            </div>
+          )}
+          {programName && (
+            <div className="flex justify-between py-2 border-b border-accent-100">
+              <span className="text-accent-500">メニュー</span>
+              <span className="font-medium text-accent-900">{programName}</span>
+            </div>
+          )}
+          {reservationDate && (
+            <div className="flex justify-between py-2 border-b border-accent-100">
+              <span className="text-accent-500">予約日時</span>
+              <span className="font-medium text-accent-900">
+                {reservationDate} {reservationTime && `${reservationTime}`}
+              </span>
+            </div>
+          )}
+          {duration && (
+            <div className="flex justify-between py-2 border-b border-accent-100">
+              <span className="text-accent-500">所要時間</span>
+              <span className="font-medium text-accent-900">{duration}分</span>
+            </div>
+          )}
           {email && (
             <div className="flex justify-between py-2">
               <span className="text-accent-500">メールアドレス</span>
@@ -61,6 +174,34 @@ function CompleteContent() {
           )}
         </div>
       </div>
+
+      {/* Reservation Detail Link */}
+      {reservationDetailUrl && (
+        <div className="card bg-gradient-to-br from-green-50 to-white border border-green-100 mb-8 animate-fade-in-delay-1">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <h3 className="font-medium text-accent-800 mb-1">予約確認・キャンセル</h3>
+              <p className="text-sm text-accent-600 mb-3">
+                下記リンクから予約の確認・キャンセルができます。このページをブックマークしておくことをおすすめします。
+              </p>
+              <Link 
+                href={reservationDetailUrl}
+                className="inline-flex items-center gap-2 text-sm text-green-600 hover:text-green-700 font-medium"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                予約確認ページを開く
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Email Notice */}
       <div className="card bg-gradient-to-br from-blue-50 to-white border border-blue-100 mb-8 animate-fade-in-delay-2">
@@ -146,4 +287,3 @@ export default function CompletePage() {
     </Suspense>
   )
 }
-

@@ -90,6 +90,53 @@ export interface Reservation {
   created_at: string
 }
 
+// 予約詳細（拡張版）
+export interface ReservationDetail {
+  reservation: {
+    id: number
+    member_id: number
+    studio_lesson_id: number | null
+    studio_room_id: number | null
+    program_id: number | null
+    status: number
+    status_label: string
+    start_at: string
+    end_at: string
+    no: string | null
+    created_at: string
+    is_cancelable: boolean
+  }
+  member: {
+    id: number
+    name: string
+    name_kana: string
+    email: string
+    phone: string
+  }
+  studio: {
+    id: number
+    name: string
+    code: string
+    address: string
+    tel: string
+  }
+  program: {
+    id: number
+    name: string
+    description: string
+    duration: number
+    price: number
+  }
+  lesson: {
+    id: number
+    date: string
+    start_at: string
+    end_at: string
+    program_id: number
+    studio_id: number
+  }
+}
+
 export interface ReservationRequest {
   studio_lesson_id: number
   guest_name: string
@@ -231,6 +278,14 @@ export async function createReservation(
 export async function getReservation(reservationId: number): Promise<Reservation | null> {
   const response = await fetchApi<{ reservation: Reservation }>(`/api/reservations/${reservationId}`)
   return response.data?.reservation || null
+}
+
+export async function getReservationDetail(reservationId: number): Promise<ReservationDetail | null> {
+  const response = await fetchApi<ReservationDetail>(`/api/reservations/${reservationId}`)
+  if (response.error || !response.data) {
+    return null
+  }
+  return response.data
 }
 
 export async function cancelReservation(

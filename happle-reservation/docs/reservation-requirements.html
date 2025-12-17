@@ -390,6 +390,336 @@ code {
 </tbody>
 </table>
 <hr>
+<h2 id="%E5%9B%BA%E5%AE%9A%E6%9E%A0%E4%BA%88%E7%B4%84-vs-%E8%87%AA%E7%94%B1%E6%9E%A0%E4%BA%88%E7%B4%84%E8%A9%B3%E7%B4%B0%E6%AF%94%E8%BC%83">固定枠予約 vs 自由枠予約（詳細比較）</h2>
+<h3 id="%E5%9F%BA%E6%9C%AC%E7%9A%84%E3%81%AA%E9%81%95%E3%81%84">基本的な違い</h3>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>固定枠予約（レッスン予約）</th>
+<th>自由枠予約（choice予約）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>API</strong></td>
+<td><code>POST /reservation/reservations/reserve</code></td>
+<td><code>POST /reservation/reservations/choice/reserve</code></td>
+</tr>
+<tr>
+<td><strong>特徴</strong></td>
+<td>事前に作成したレッスン枠に予約</td>
+<td>営業時間内で自由に時間を選んで予約</td>
+</tr>
+<tr>
+<td><strong>時間選択</strong></td>
+<td>レッスン枠で決まっている</td>
+<td>ユーザーが開始時間を指定</td>
+</tr>
+<tr>
+<td><strong>席番号(no)</strong></td>
+<td>必要（自動で空き席を選択）</td>
+<td>不要</td>
+</tr>
+<tr>
+<td><strong>用途</strong></td>
+<td>グループレッスン、定時クラス</td>
+<td>パーソナルトレーニング、個別予約</td>
+</tr>
+</tbody>
+</table>
+<h3 id="%E4%BA%88%E7%B4%84%E3%81%AE%E6%B5%81%E3%82%8C">予約の流れ</h3>
+<h4 id="%E5%9B%BA%E5%AE%9A%E6%9E%A0%E4%BA%88%E7%B4%84%E3%81%AE%E6%B5%81%E3%82%8C">固定枠予約の流れ</h4>
+<pre class="hljs"><code><div>┌─────────────────────────────────────────────────────────────┐
+│                    固定枠予約の流れ                          │
+└─────────────────────────────────────────────────────────────┘
+
+  管理者                    ユーザー                  システム
+    │                         │                        │
+    │  レッスン枠を作成        │                        │
+    │  (12/13 10:00 ピラティス) │                        │
+    │ ───────────────────────────────────────────────&gt; │
+    │                         │                        │
+    │                         │  レッスン一覧を見る     │
+    │                         │ ─────────────────────&gt; │
+    │                         │                        │
+    │                         │  「12/13 10:00」を選択  │
+    │                         │ ─────────────────────&gt; │
+    │                         │                        │
+    │                         │  空き席(no=2)に自動予約 │
+    │                         │ &lt;───────────────────── │
+</div></code></pre>
+<h4 id="%E8%87%AA%E7%94%B1%E6%9E%A0%E4%BA%88%E7%B4%84%E3%81%AE%E6%B5%81%E3%82%8C">自由枠予約の流れ</h4>
+<pre class="hljs"><code><div>┌─────────────────────────────────────────────────────────────┐
+│                    自由枠予約の流れ                          │
+└─────────────────────────────────────────────────────────────┘
+
+  管理者                    ユーザー                  システム
+    │                         │                        │
+    │  営業時間を設定          │                        │
+    │  (9:00〜21:00)          │                        │
+    │ ───────────────────────────────────────────────&gt; │
+    │                         │                        │
+    │  スタッフシフトを設定    │                        │
+    │ ───────────────────────────────────────────────&gt; │
+    │                         │                        │
+    │                         │  空き状況を確認        │
+    │                         │ ─────────────────────&gt; │
+    │                         │                        │
+    │                         │  「14:30から30分」を選択│
+    │                         │ ─────────────────────&gt; │
+    │                         │                        │
+    │                         │  スタッフを自動/手動選択│
+    │                         │ &lt;───────────────────── │
+</div></code></pre>
+<h3 id="%E5%BF%85%E8%A6%81%E3%81%AAapi%E3%83%91%E3%83%A9%E3%83%A1%E3%83%BC%E3%82%BF">必要なAPIパラメータ</h3>
+<h4 id="%E5%9B%BA%E5%AE%9A%E6%9E%A0%E4%BA%88%E7%B4%84">固定枠予約</h4>
+<pre class="hljs"><code><div>{
+  <span class="hljs-attr">"member_id"</span>: <span class="hljs-number">49</span>,
+  <span class="hljs-attr">"studio_lesson_id"</span>: <span class="hljs-number">248</span>,    <span class="hljs-comment">// ← レッスン枠ID（必須）</span>
+  <span class="hljs-attr">"no"</span>: <span class="hljs-string">"2"</span>,                   <span class="hljs-comment">// ← 席番号（自動選択）</span>
+  <span class="hljs-attr">"member_ticket_id"</span>: <span class="hljs-number">43</span>
+}
+</div></code></pre>
+<h4 id="%E8%87%AA%E7%94%B1%E6%9E%A0%E4%BA%88%E7%B4%84">自由枠予約</h4>
+<pre class="hljs"><code><div>{
+  <span class="hljs-attr">"member_id"</span>: <span class="hljs-number">34</span>,
+  <span class="hljs-attr">"studio_room_id"</span>: <span class="hljs-number">3</span>,         <span class="hljs-comment">// ← 部屋ID（必須）</span>
+  <span class="hljs-attr">"program_id"</span>: <span class="hljs-number">2</span>,             <span class="hljs-comment">// ← プログラムID（必須）</span>
+  <span class="hljs-attr">"start_at"</span>: <span class="hljs-string">"2025-12-13 14:30:00.000"</span>,  <span class="hljs-comment">// ← 自分で指定</span>
+  <span class="hljs-attr">"instructor_ids"</span>: [<span class="hljs-number">1</span>],       <span class="hljs-comment">// ← スタッフID（必須）</span>
+  <span class="hljs-attr">"ticket_id"</span>: <span class="hljs-number">5</span>
+}
+</div></code></pre>
+<h3 id="%E7%AE%A1%E7%90%86%E7%94%BB%E9%9D%A2%E3%81%A7%E3%81%AE%E8%A8%AD%E5%AE%9A%E3%81%AE%E9%81%95%E3%81%84">管理画面での設定の違い</h3>
+<table>
+<thead>
+<tr>
+<th>設定項目</th>
+<th style="text-align:center">固定枠予約</th>
+<th style="text-align:center">自由枠予約</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>スタジオルーム作成</td>
+<td style="text-align:center">✅ 予約タイプ:「固定枠」</td>
+<td style="text-align:center">✅ 予約タイプ:「自由枠」</td>
+</tr>
+<tr>
+<td>レッスン枠作成</td>
+<td style="text-align:center">✅ 必須</td>
+<td style="text-align:center">❌ 不要</td>
+</tr>
+<tr>
+<td>スペース設定（席番号）</td>
+<td style="text-align:center">✅ 必須（<code>no</code>フィールド）</td>
+<td style="text-align:center">❌ 不要</td>
+</tr>
+<tr>
+<td>月次シフト作成</td>
+<td style="text-align:center">△ 任意</td>
+<td style="text-align:center">✅ 必須</td>
+</tr>
+<tr>
+<td>営業時間設定</td>
+<td style="text-align:center">△ 任意</td>
+<td style="text-align:center">✅ 必須</td>
+</tr>
+<tr>
+<td>スタッフシフト設定</td>
+<td style="text-align:center">△ 任意</td>
+<td style="text-align:center">✅ 必須</td>
+</tr>
+<tr>
+<td>ルームサービス設定</td>
+<td style="text-align:center">❌ 不要</td>
+<td style="text-align:center">✅ 必須（期間設定）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="%E7%8F%BE%E5%9C%A8%E3%81%AE%E8%A8%AD%E5%AE%9Atest-studio">現在の設定（Test Studio）</h3>
+<table>
+<thead>
+<tr>
+<th>部屋名</th>
+<th>タイプ</th>
+<th>studio_room_id</th>
+<th>備考</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Pilates Room</strong></td>
+<td>固定枠予約</td>
+<td>5</td>
+<td>レッスン枠から予約</td>
+</tr>
+<tr>
+<td><strong>Test Room</strong></td>
+<td>自由枠予約</td>
+<td>3 or 4</td>
+<td>時間を自由に選択</td>
+</tr>
+</tbody>
+</table>
+<h3 id="%E3%81%A9%E3%81%A1%E3%82%89%E3%82%92%E4%BD%BF%E3%81%86%E3%81%B9%E3%81%8D">どちらを使うべき？</h3>
+<table>
+<thead>
+<tr>
+<th>ユースケース</th>
+<th>推奨</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>グループレッスン（ヨガ、ピラティスなど）</td>
+<td><strong>固定枠予約</strong></td>
+</tr>
+<tr>
+<td>定員のあるクラス</td>
+<td><strong>固定枠予約</strong></td>
+</tr>
+<tr>
+<td>パーソナルトレーニング</td>
+<td><strong>自由枠予約</strong></td>
+</tr>
+<tr>
+<td>施術・エステなど個別予約</td>
+<td><strong>自由枠予約</strong></td>
+</tr>
+<tr>
+<td>スタッフが時間を柔軟に対応</td>
+<td><strong>自由枠予約</strong></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="%E3%82%B2%E3%82%B9%E3%83%88%E4%BA%88%E7%B4%84%E3%81%AE%E6%B5%81%E3%82%8C%E9%87%8D%E8%A6%81">ゲスト予約の流れ（重要）</h2>
+<h3 id="%E3%83%81%E3%82%B1%E3%83%83%E3%83%88%E3%81%A8%E3%81%AF">チケットとは？</h3>
+<p><strong>チケット = 予約するための権利（回数券のようなもの）</strong></p>
+<ul>
+<li>メンバーがチケットを持っていないと予約できない（<code>RSV_000005</code>エラー）</li>
+<li>管理画面で事前にチケットを作成しておく必要がある</li>
+<li>予約時にチケットが消費される</li>
+</ul>
+<h3 id="%E7%8F%BE%E5%9C%A8%E3%81%AE%E3%83%81%E3%82%B1%E3%83%83%E3%83%88%E4%B8%80%E8%A6%A7">現在のチケット一覧</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>名前</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Trial Ticket</td>
+<td>体験用</td>
+</tr>
+<tr>
+<td>2</td>
+<td>One Time Ticket</td>
+<td>1回券</td>
+</tr>
+<tr>
+<td>3</td>
+<td>初回体験</td>
+<td>初回用</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Test Ticket</td>
+<td>テスト</td>
+</tr>
+<tr>
+<td><strong>5</strong></td>
+<td><strong>Web予約チケット</strong></td>
+<td><strong>ゲスト予約用</strong> ✅</td>
+</tr>
+</tbody>
+</table>
+<h3 id="%E3%82%B2%E3%82%B9%E3%83%88%E4%BA%88%E7%B4%84%E3%81%AE%E8%87%AA%E5%8B%95%E5%8C%96%E3%83%95%E3%83%AD%E3%83%BC">ゲスト予約の自動化フロー</h3>
+<pre class="hljs"><code><div>┌─────────────────────────────────────────────────────────────┐
+│                    ゲスト予約フロー                          │
+└─────────────────────────────────────────────────────────────┘
+
+  ゲスト              Backend API              hacomono API
+    │                     │                        │
+    │  予約リクエスト      │                        │
+    │ ─────────────────&gt; │                        │
+    │                     │                        │
+    │                     │  1. メンバー作成        │
+    │                     │ ────────────────────&gt; │
+    │                     │      member_id        │
+    │                     │ &lt;──────────────────── │
+    │                     │                        │
+    │                     │  2. チケット付与        │
+    │                     │     (ticket_id: 5)    │
+    │                     │ ────────────────────&gt; │
+    │                     │   member_ticket_id    │
+    │                     │ &lt;──────────────────── │
+    │                     │                        │
+    │                     │  3. 予約作成           │
+    │                     │ ────────────────────&gt; │
+    │                     │    reservation_id     │
+    │                     │ &lt;──────────────────── │
+    │                     │                        │
+    │    予約完了         │                        │
+    │ &lt;───────────────── │                        │
+</div></code></pre>
+<h3 id="%E3%83%90%E3%83%83%E3%82%AF%E3%82%A8%E3%83%B3%E3%83%89%E3%81%A7%E3%81%AE%E8%87%AA%E5%8B%95%E5%87%A6%E7%90%86">バックエンドでの自動処理</h3>
+<ol>
+<li><strong>メンバー自動作成</strong>: ゲストの情報（名前、メール、電話番号）でメンバーを作成</li>
+<li><strong>チケット自動付与</strong>: <code>ticket_id: 5</code>（Web予約チケット）を1枚付与</li>
+<li><strong>予約作成</strong>: チケットを使って予約を作成</li>
+</ol>
+<h3 id="%E5%AE%9F%E8%A3%85%E3%82%B3%E3%83%BC%E3%83%89%E4%BE%8B%E3%83%90%E3%83%83%E3%82%AF%E3%82%A8%E3%83%B3%E3%83%89">実装コード例（バックエンド）</h3>
+<pre class="hljs"><code><div><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">_create_guest_member</span><span class="hljs-params">(client, guest_name, guest_email, guest_phone, ...)</span>:</span>
+    <span class="hljs-comment"># 1. メンバー作成</span>
+    member_response = client.create_member({
+        <span class="hljs-string">"last_name"</span>: <span class="hljs-string">"ゲスト"</span>,
+        <span class="hljs-string">"first_name"</span>: <span class="hljs-string">"太郎"</span>,
+        <span class="hljs-string">"mail_address"</span>: guest_email,
+        <span class="hljs-string">"tel"</span>: guest_phone,
+        <span class="hljs-string">"plain_password"</span>: <span class="hljs-string">"自動生成パスワード"</span>,
+        <span class="hljs-string">"gender"</span>: <span class="hljs-number">1</span>,
+        <span class="hljs-string">"birthday"</span>: <span class="hljs-string">"2000-01-01"</span>,
+        <span class="hljs-string">"studio_id"</span>: <span class="hljs-number">2</span>
+    })
+    member_id = member_response[<span class="hljs-string">"data"</span>][<span class="hljs-string">"member"</span>][<span class="hljs-string">"id"</span>]
+    
+    <span class="hljs-comment"># 2. チケット付与</span>
+    ticket_response = client.grant_ticket_to_member(
+        member_id, 
+        ticket_id=<span class="hljs-number">5</span>,  <span class="hljs-comment"># Web予約チケット</span>
+        num=<span class="hljs-number">1</span>
+    )
+    member_ticket_id = ticket_response[<span class="hljs-string">"data"</span>][<span class="hljs-string">"member_ticket"</span>][<span class="hljs-string">"id"</span>]
+    
+    <span class="hljs-keyword">return</span> member_id, member_ticket_id
+</div></code></pre>
+<h3 id="%E3%83%86%E3%82%B9%E3%83%88%E7%B5%90%E6%9E%9C2025-12-12-%E6%88%90%E5%8A%9F">テスト結果（2025-12-12 成功）</h3>
+<pre class="hljs"><code><div><span class="hljs-comment"># 1. メンバー作成</span>
+作成されたメンバーID: 34
+
+<span class="hljs-comment"># 2. チケット付与</span>
+付与されたチケットID: 23
+
+<span class="hljs-comment"># 3. 予約作成（自由枠）</span>
+{
+  <span class="hljs-string">"reservation"</span>: {
+    <span class="hljs-string">"id"</span>: 1190,
+    <span class="hljs-string">"member_id"</span>: 34,
+    <span class="hljs-string">"member_ticket_id"</span>: 23,
+    <span class="hljs-string">"status"</span>: 2,
+    <span class="hljs-string">"start_at"</span>: <span class="hljs-string">"2025-09-30T21:00:00+09:00"</span>,
+    <span class="hljs-string">"end_at"</span>: <span class="hljs-string">"2025-09-30T21:30:00+09:00"</span>
+  }
+}
+</div></code></pre>
+<hr>
 <h2 id="1-%E5%9B%BA%E5%AE%9A%E6%9E%A0%E4%BA%88%E7%B4%84%E3%83%AC%E3%83%83%E3%82%B9%E3%83%B3%E4%BA%88%E7%B4%84">1. 固定枠予約（レッスン予約）</h2>
 <h3 id="api-%E3%82%A8%E3%83%B3%E3%83%89%E3%83%9D%E3%82%A4%E3%83%B3%E3%83%88">API エンドポイント</h3>
 <pre class="hljs"><code><div>POST /reservation/reservations/reserve
@@ -444,12 +774,51 @@ code {
 <li><strong>予約タイプ</strong>: 「固定枠予約」に設定</li>
 <li><code>GET /master/studio-rooms</code> で確認</li>
 </ul>
-<h4 id="%E2%9C%85-4-%E3%82%B9%E3%82%BF%E3%82%B8%E3%82%AA%E3%83%AB%E3%83%BC%E3%83%A0%E3%82%B9%E3%83%9A%E3%83%BC%E3%82%B9studio-room-space%E3%81%AE%E8%A8%AD%E5%AE%9A">✅ 4. スタジオルームスペース（Studio Room Space）の設定</h4>
+<h4 id="%E2%9C%85-4-%E3%82%B9%E3%82%BF%E3%82%B8%E3%82%AA%E3%83%AB%E3%83%BC%E3%83%A0%E3%82%B9%E3%83%9A%E3%83%BC%E3%82%B9studio-room-space%E3%81%AE%E8%A8%AD%E5%AE%9A-%E2%9A%A0%EF%B8%8F%E9%87%8D%E8%A6%81">✅ 4. スタジオルームスペース（Studio Room Space）の設定 ⚠️重要</h4>
 <ul>
 <li>スペース（席・ベッド等）が作成されていること</li>
-<li><code>space_details</code> に <code>no_label</code> が設定されていること（予約時の <code>no</code> パラメータに使用）</li>
+<li><strong><code>space_details</code> に <code>no</code> フィールドが必要</strong>（予約時の席番号として使用）</li>
 <li><code>GET /master/studio-room-spaces/{studio_room_id}</code> で確認</li>
 </ul>
+<pre class="hljs"><code><div>予約可能なスペースの条件:
+space_details に &quot;no&quot; フィールドがあること
+
+✅ 正しい例（Pilates Spaces）:
+space_details: [
+  {&quot;no&quot;: 1, &quot;coord_x&quot;: 0, &quot;coord_y&quot;: 0},
+  {&quot;no&quot;: 2, &quot;coord_x&quot;: 1, &quot;coord_y&quot;: 0},
+  {&quot;no&quot;: 3, &quot;coord_x&quot;: 2, &quot;coord_y&quot;: 0}
+]
+→ 席番号 1, 2, 3 に予約可能
+
+❌ 間違った例（Bookom Space 10）:
+space_details: [
+  {&quot;type&quot;: &quot;POSITION&quot;, &quot;coord_x&quot;: 0, &quot;coord_y&quot;: 0, &quot;no_label&quot;: &quot;1&quot;}
+]
+→ &quot;no&quot; がないため予約不可！
+</div></code></pre>
+<p><strong><code>no</code> と <code>no_label</code> の違い:</strong></p>
+<table>
+<thead>
+<tr>
+<th>フィールド</th>
+<th>用途</th>
+<th>予約時の使用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>no</code></td>
+<td>席番号（実データ）</td>
+<td>✅ 予約APIの <code>no</code> パラメータに使用</td>
+</tr>
+<tr>
+<td><code>no_label</code></td>
+<td>表示用ラベル</td>
+<td>❌ 予約には使えない</td>
+</tr>
+</tbody>
+</table>
 <h4 id="%E2%9C%85-5-%E3%82%B9%E3%82%BF%E3%83%83%E3%83%95instructor%E3%81%AE%E8%A8%AD%E5%AE%9A">✅ 5. スタッフ（Instructor）の設定</h4>
 <ul>
 <li>スタッフが登録され、有効になっていること</li>
@@ -505,6 +874,11 @@ code {
 <td>上記必須パラメータを確認</td>
 </tr>
 <tr>
+<td><code>CMN_000001</code></td>
+<td>エラーが発生しました</td>
+<td>スペースの <code>space_details</code> に <code>no</code> がない可能性</td>
+</tr>
+<tr>
 <td><code>RSV_000005</code></td>
 <td>チケットが不足しています</td>
 <td>メンバーにチケットを付与する</td>
@@ -514,8 +888,37 @@ code {
 <td>営業時間外の日時を指定することはできません</td>
 <td>レッスン枠の日時が営業時間内か確認</td>
 </tr>
+<tr>
+<td><code>SPACE_NO_MISSING</code></td>
+<td>席番号が設定されていません</td>
+<td>スペースの設定を修正（下記参照）</td>
+</tr>
 </tbody>
 </table>
+<h3 id="%E3%82%B9%E3%83%9A%E3%83%BC%E3%82%B9%E8%A8%AD%E5%AE%9A%E3%82%A8%E3%83%A9%E3%83%BC%E3%81%AE%E5%AF%BE%E5%87%A6%E6%B3%95">スペース設定エラーの対処法</h3>
+<p><code>CMN_000001</code>（汎用エラー）が出る場合、スペースの席設定が原因の可能性があります：</p>
+<ol>
+<li>
+<p><strong>管理画面でスペース設定を確認</strong></p>
+<ul>
+<li>設定 → スタジオルームスペース</li>
+<li>該当スペースの編集画面を開く</li>
+</ul>
+</li>
+<li>
+<p><strong>席を正しく追加</strong></p>
+<ul>
+<li>席を追加し、番号（no）を設定</li>
+<li>例: 席1, 席2, 席3...</li>
+</ul>
+</li>
+<li>
+<p><strong>APIで確認</strong></p>
+</li>
+</ol>
+<pre class="hljs"><code><div>GET /master/studio-room-spaces/{space_id}
+<span class="hljs-comment"># space_details に "no" フィールドがあるか確認</span>
+</div></code></pre>
 <hr>
 <h2 id="2-%E8%87%AA%E7%94%B1%E6%9E%A0%E4%BA%88%E7%B4%84choice%E4%BA%88%E7%B4%84">2. 自由枠予約（choice予約）</h2>
 <h3 id="api-%E3%82%A8%E3%83%B3%E3%83%89%E3%83%9D%E3%82%A4%E3%83%B3%E3%83%88">API エンドポイント</h3>
@@ -777,6 +1180,28 @@ code {
 </ul>
 <hr>
 <h2 id="6-%E3%82%88%E3%81%8F%E3%81%82%E3%82%8B%E3%83%88%E3%83%A9%E3%83%96%E3%83%AB%E3%81%A8%E8%A7%A3%E6%B1%BA%E7%AD%96">6. よくあるトラブルと解決策</h2>
+<h3 id="q-%E3%82%A8%E3%83%A9%E3%83%BC%E3%81%8C%E7%99%BA%E7%94%9F%E3%81%97%E3%81%BE%E3%81%97%E3%81%9Fcmn000001%E3%81%8C%E5%87%BA%E3%82%8B">Q: 「エラーが発生しました」（CMN_000001）が出る</h3>
+<p><strong>A</strong>: スペースの席設定が原因の可能性が高いです：</p>
+<ol>
+<li><strong>スペースの <code>space_details</code> に <code>no</code> フィールドがあるか確認</strong></li>
+</ol>
+<pre class="hljs"><code><div>GET /master/studio-room-spaces/{space_id}
+</div></code></pre>
+<ol start="2">
+<li>
+<p><strong><code>no</code> がない場合は管理画面で設定</strong></p>
+<ul>
+<li>設定 → スタジオルームスペース → 該当スペース</li>
+<li>席を追加（no=1, no=2, ...）</li>
+</ul>
+</li>
+<li>
+<p><strong>バックエンドは <code>no</code> があるスペースのレッスンのみ表示</strong></p>
+<ul>
+<li>自動的にフィルタリングされます</li>
+</ul>
+</li>
+</ol>
 <h3 id="q-%E5%96%B6%E6%A5%AD%E6%99%82%E9%96%93%E5%A4%96%E3%82%A8%E3%83%A9%E3%83%BC%E3%81%8C%E5%87%BA%E3%82%8B">Q: 「営業時間外」エラーが出る</h3>
 <p><strong>A</strong>: 以下を順番にチェック：</p>
 <ol>
@@ -792,6 +1217,17 @@ code {
 <p><strong>A</strong>: メンバーにチケットを付与する。チケットがプログラムで使えるよう設定。</p>
 <h3 id="q-%E5%90%8C%E3%81%98%E3%83%A1%E3%83%B3%E3%83%90%E3%83%BC%E3%81%A7%E4%BA%88%E7%B4%84%E3%81%8C%E9%87%8D%E8%A4%87%E3%81%99%E3%82%8B">Q: 同じメンバーで予約が重複する</h3>
 <p><strong>A</strong>: 新しいメンバーを作成するか、別の時間帯を選択する。</p>
+<h3 id="q-%E3%83%AC%E3%83%83%E3%82%B9%E3%83%B3%E6%9E%A0%E3%81%8C%E8%A1%A8%E7%A4%BA%E3%81%95%E3%82%8C%E3%81%AA%E3%81%84">Q: レッスン枠が表示されない</h3>
+<p><strong>A</strong>: スペースの席設定（<code>no</code>フィールド）がないレッスンは自動的にフィルタされます：</p>
+<ol>
+<li><strong>APIでスペースを確認</strong></li>
+</ol>
+<pre class="hljs"><code><div>GET /master/studio-room-spaces
+<span class="hljs-comment"># space_details に "no" があるスペースのみ予約可能</span>
+</div></code></pre>
+<ol start="2">
+<li><strong>予約可能なスペースを使用したレッスン枠を作成</strong></li>
+</ol>
 
 </body>
 </html>

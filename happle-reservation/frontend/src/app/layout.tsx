@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Noto_Sans_JP, Zen_Maru_Gothic } from 'next/font/google'
+import { GoogleTagManager } from '@next/third-parties/google'
 import './globals.css'
 
 const notoSans = Noto_Sans_JP({
@@ -27,6 +28,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ja" className={`${notoSans.variable} ${zenMaru.variable}`}>
+      {/* Google Tag Manager - GTM IDは環境変数で後から一括変更可能 */}
+      {process.env.NEXT_PUBLIC_GTM_ID && (
+        <GoogleTagManager gtmId={process.env.NEXT_PUBLIC_GTM_ID} />
+      )}
       <body className="font-sans min-h-screen">
         <div className="min-h-screen flex flex-col">
           {/* Header */}
@@ -60,4 +65,6 @@ export default function RootLayout({
     </html>
   )
 }
+
+
 

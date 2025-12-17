@@ -9,6 +9,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from functools import wraps
+from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -68,6 +69,161 @@ def handle_errors(f):
             logger.exception(f"Unexpected error: {e}")
             return jsonify({"error": "Internal server error", "message": str(e)}), 500
     return decorated_function
+
+
+# ==================== メール送信モック ====================
+
+# メール保存ディレクトリ
+EMAILS_DIR = Path(__file__).parent / "logs" / "emails"
+EMAILS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def send_reservation_email_mock(
+    reservation_id: int,
+    guest_name: str,
+    guest_email: str,
+    guest_phone: str,
+    studio_name: str,
+    studio_address: str = "",
+    studio_tel: str = "",
+    program_name: str = "",
+    reservation_date: str = "",
+    reservation_time: str = "",
+    duration_minutes: int = 0,
+    price: int = 0,
+    line_url: str = "https://lin.ee/SK9pvTs",
+    base_url: str = ""
+):
+    """予約完了メールをファイルに保存（モック実装）
+    
+    Args:
+        reservation_id: 予約ID
+        guest_name: ゲスト名
+        guest_email: メールアドレス
+        guest_phone: 電話番号
+        studio_name: 店舗名
+        studio_address: 店舗住所
+        studio_tel: 店舗電話番号
+        program_name: メニュー名
+        reservation_date: 予約日
+        reservation_time: 予約時間
+        duration_minutes: 所要時間（分）
+        price: 料金
+        line_url: LINE URL
+        base_url: 予約確認用ベースURL
+    """
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    
+    # 予約確認URL
+    detail_url = f"{base_url}/reservation-detail?reservation_id={reservation_id}" if base_url else f"/reservation-detail?reservation_id={reservation_id}"
+    
+    email_content = f"""
+================================================================================
+予約確認メール（モック）
+送信日時: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+================================================================================
+
+{guest_name}様
+
+この度は「{studio_name}」にご予約いただき誠にありがとうございます。
+今回のご予約内容は以下のとおりです。
+----------------------------------
+■予約日時
+{reservation_date} {reservation_time}
+
+■お客様名
+{guest_name}
+
+■店舗名
+{studio_name}
+
+■施術コース
+{program_name} {f"¥{price:,}" if price else ""}
+
+■所要時間
+{duration_minutes}分
+
+■電話番号
+{guest_phone}
+
+■予約確認URL
+{detail_url}
+
+
+《こちらのLINEにフルネームをお送りいただきますと、ご予約完了となります》
+
+
+
+{line_url}
+
+
+
+※下記内容をご確認の上、友だち追加をお願いします。
+
+※LINEをお持ちでない方は空メールをお送りくださいませ。
+
+※2日以内にご返信がない場合は自動キャンセルさせていただきますのでご了承ください
+
+
+
+【当日の注意事項について】
+
+ ・持病がある方に関しては施術によっては医師の同意書が必要になります。
+
+・妊娠中の方の施術はお断りさせていただいております。
+
+・未成年の方は親権者同伴以外の場合、施術不可となります。
+
+・生理中でも施術は可能です。
+
+・お支払いはクレジットカードのみとなります。(カード番号が必要になります)
+
+・初回お試しは全店舗を通して、お一人様一回までとなっております。2回目のご利用の方は通常料金でのご案内となります。
+
+
+
+【キャンセルについて】
+
+◆キャンセルはご予約日の前日18時までにLINEにてご連絡くださいませ。
+
+◆無断キャンセルの場合は正規の施術代をご負担いただきます。また、次回よりご予約がお取りいただけなくなる場合がございます。
+
+◆前日18時以降のキャンセルやご変更は直前キャンセル料2200円を銀行振り込みにてご請求させていただきます。
+
+
+
+お願いばかりで申し訳ございませんが、一部ルールをお守りいただけない方がいらっしゃいますので予めご了承くださいませ。
+
+
+
+当日お会いできるのを楽しみにしております。
+
+
+=============================
+■{studio_name}
+住所: {studio_address or "〒000-0000 住所未設定"}
+TEL: {studio_tel or "未設定"}
+メールアドレス: {guest_email}
+=============================
+
+================================================================================
+宛先: {guest_email}
+件名: 【{studio_name}】ご予約確認
+================================================================================
+"""
+    
+    # ファイルに保存
+    filename = f"{reservation_id}_{timestamp}.txt"
+    filepath = EMAILS_DIR / filename
+    
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(email_content)
+        logger.info(f"Email mock saved to: {filepath}")
+        return str(filepath)
+    except Exception as e:
+        logger.error(f"Failed to save email mock: {e}")
+        return None
 
 
 # ==================== ヘルスチェック ====================
@@ -754,10 +910,82 @@ def create_reservation():
             "detail": error_info["detail"]
         }), 400
     
+    # 4. 予約確認メールを送信（モック）
+    reservation_id = reservation.get("id")
+    try:
+        # レッスン情報から詳細を取得
+        lesson_response = client.get_studio_lesson(studio_lesson_id)
+        lesson_data = lesson_response.get("data", {}).get("studio_lesson", {})
+        
+        # 日時のフォーマット
+        start_at = lesson_data.get("start_at", "")
+        end_at = lesson_data.get("end_at", "")
+        reservation_date = ""
+        reservation_time = ""
+        duration_minutes = 0
+        
+        if start_at:
+            try:
+                start_dt = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
+                reservation_date = start_dt.strftime("%Y-%m-%d(%a)")
+                reservation_time = start_dt.strftime("%H:%M")
+                if end_at:
+                    end_dt = datetime.fromisoformat(end_at.replace("Z", "+00:00"))
+                    duration_minutes = int((end_dt - start_dt).total_seconds() / 60)
+            except:
+                pass
+        
+        # 店舗情報を取得
+        studio_id = data.get("studio_id", 2)
+        studio_name = ""
+        studio_address = ""
+        studio_tel = ""
+        try:
+            studio_response = client.get_studio(studio_id)
+            studio_data = studio_response.get("data", {}).get("studio", {})
+            studio_name = studio_data.get("name", "")
+            studio_address = studio_data.get("address", "")
+            studio_tel = studio_data.get("tel", "")
+        except:
+            pass
+        
+        # プログラム情報を取得
+        program_id = lesson_data.get("program_id")
+        program_name = ""
+        price = 0
+        if program_id:
+            try:
+                program_response = client.get_program(program_id)
+                program_data = program_response.get("data", {}).get("program", {})
+                program_name = program_data.get("name", "")
+                price = program_data.get("price", 0)
+            except:
+                pass
+        
+        # メール送信モック
+        base_url = request.headers.get("Origin", "")
+        send_reservation_email_mock(
+            reservation_id=reservation_id,
+            guest_name=data["guest_name"],
+            guest_email=data["guest_email"],
+            guest_phone=data["guest_phone"],
+            studio_name=studio_name,
+            studio_address=studio_address,
+            studio_tel=studio_tel,
+            program_name=program_name,
+            reservation_date=reservation_date,
+            reservation_time=reservation_time,
+            duration_minutes=duration_minutes,
+            price=price,
+            base_url=base_url
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send email mock: {e}")
+    
     return jsonify({
         "success": True,
         "reservation": {
-            "id": reservation.get("id"),
+            "id": reservation_id,
             "member_id": member_id,
             "studio_lesson_id": studio_lesson_id,
             "status": reservation.get("status"),
@@ -770,22 +998,154 @@ def create_reservation():
 @app.route("/api/reservations/<int:reservation_id>", methods=["GET"])
 @handle_errors
 def get_reservation(reservation_id: int):
-    """予約詳細を取得"""
+    """予約詳細を取得（拡張版）"""
     client = get_hacomono_client()
     response = client.get_reservation(reservation_id)
     
     reservation = response.get("data", {}).get("reservation", {})
     
+    # 予約ステータスの日本語変換
+    status_map = {
+        1: "仮予約",
+        2: "確定",
+        3: "完了",
+        4: "キャンセル",
+        5: "無断キャンセル"
+    }
+    status = reservation.get("status")
+    status_label = status_map.get(status, "不明")
+    
+    # 関連情報を取得
+    member_info = {}
+    studio_info = {}
+    program_info = {}
+    lesson_info = {}
+    
+    # メンバー情報
+    member_id = reservation.get("member_id")
+    if member_id:
+        try:
+            member_response = client.get_member(member_id)
+            member_data = member_response.get("data", {}).get("member", {})
+            member_info = {
+                "id": member_id,
+                "name": f"{member_data.get('last_name', '')} {member_data.get('first_name', '')}".strip(),
+                "name_kana": f"{member_data.get('last_name_kana', '')} {member_data.get('first_name_kana', '')}".strip(),
+                "email": member_data.get("mail_address", ""),
+                "phone": member_data.get("tel", "")
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get member info: {e}")
+    
+    # レッスン情報（固定枠の場合）
+    studio_lesson_id = reservation.get("studio_lesson_id")
+    if studio_lesson_id:
+        try:
+            lesson_response = client.get_studio_lesson(studio_lesson_id)
+            lesson_data = lesson_response.get("data", {}).get("studio_lesson", {})
+            lesson_info = {
+                "id": studio_lesson_id,
+                "date": lesson_data.get("date"),
+                "start_at": lesson_data.get("start_at"),
+                "end_at": lesson_data.get("end_at"),
+                "program_id": lesson_data.get("program_id"),
+                "studio_id": lesson_data.get("studio_id")
+            }
+            
+            # プログラム情報
+            program_id = lesson_data.get("program_id")
+            if program_id:
+                try:
+                    program_response = client.get_program(program_id)
+                    program_data = program_response.get("data", {}).get("program", {})
+                    program_info = {
+                        "id": program_id,
+                        "name": program_data.get("name", ""),
+                        "description": program_data.get("description", ""),
+                        "duration": program_data.get("duration", 0),
+                        "price": program_data.get("price", 0)
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to get program info: {e}")
+            
+            # 店舗情報
+            studio_id = lesson_data.get("studio_id")
+            if studio_id:
+                try:
+                    studio_response = client.get_studio(studio_id)
+                    studio_data = studio_response.get("data", {}).get("studio", {})
+                    studio_info = {
+                        "id": studio_id,
+                        "name": studio_data.get("name", ""),
+                        "code": studio_data.get("code", ""),
+                        "address": studio_data.get("address", ""),
+                        "tel": studio_data.get("tel", "")
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to get studio info: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to get lesson info: {e}")
+    
+    # 自由枠予約の場合（studio_room_idがある）
+    studio_room_id = reservation.get("studio_room_id")
+    if studio_room_id and not studio_lesson_id:
+        try:
+            # スタジオルーム情報から店舗IDを取得
+            room_response = client.get_studio_room(studio_room_id)
+            room_data = room_response.get("data", {}).get("studio_room", {})
+            studio_id = room_data.get("studio_id")
+            
+            if studio_id:
+                studio_response = client.get_studio(studio_id)
+                studio_data = studio_response.get("data", {}).get("studio", {})
+                studio_info = {
+                    "id": studio_id,
+                    "name": studio_data.get("name", ""),
+                    "code": studio_data.get("code", ""),
+                    "address": studio_data.get("address", ""),
+                    "tel": studio_data.get("tel", "")
+                }
+            
+            # プログラム情報（予約に含まれている場合）
+            program_id = reservation.get("program_id")
+            if program_id:
+                try:
+                    program_response = client.get_program(program_id)
+                    program_data = program_response.get("data", {}).get("program", {})
+                    program_info = {
+                        "id": program_id,
+                        "name": program_data.get("name", ""),
+                        "description": program_data.get("description", ""),
+                        "duration": program_data.get("duration", 0),
+                        "price": program_data.get("price", 0)
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to get program info: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to get room/studio info: {e}")
+    
+    # キャンセル可能かどうかを判定（ステータスが確定の場合のみ）
+    is_cancelable = status == 2
+    
     return jsonify({
         "reservation": {
             "id": reservation.get("id"),
-            "member_id": reservation.get("member_id"),
-            "studio_lesson_id": reservation.get("studio_lesson_id"),
-            "status": reservation.get("status"),
+            "member_id": member_id,
+            "studio_lesson_id": studio_lesson_id,
+            "studio_room_id": studio_room_id,
+            "program_id": reservation.get("program_id"),
+            "status": status,
+            "status_label": status_label,
             "start_at": reservation.get("start_at"),
             "end_at": reservation.get("end_at"),
-            "created_at": reservation.get("created_at")
-        }
+            "no": reservation.get("no"),
+            "created_at": reservation.get("created_at"),
+            "is_cancelable": is_cancelable
+        },
+        "member": member_info,
+        "studio": studio_info,
+        "program": program_info,
+        "lesson": lesson_info
     })
 
 
@@ -961,10 +1321,76 @@ def create_choice_reservation():
         logger.error(f"Failed to create choice reservation: {e}")
         return jsonify({"error": "Failed to create reservation", "message": str(e)}), 400
     
+    # 4. 予約確認メールを送信（モック）
+    reservation_id = reservation.get("id")
+    try:
+        # 日時のフォーマット
+        start_at_str = reservation.get("start_at", "")
+        end_at_str = reservation.get("end_at", "")
+        reservation_date = ""
+        reservation_time = ""
+        duration_minutes = 0
+        
+        if start_at_str:
+            try:
+                start_dt = datetime.fromisoformat(start_at_str.replace("Z", "+00:00"))
+                reservation_date = start_dt.strftime("%Y-%m-%d(%a)")
+                reservation_time = start_dt.strftime("%H:%M")
+                if end_at_str:
+                    end_dt = datetime.fromisoformat(end_at_str.replace("Z", "+00:00"))
+                    duration_minutes = int((end_dt - start_dt).total_seconds() / 60)
+            except:
+                pass
+        
+        # 店舗情報を取得
+        studio_id = data.get("studio_id", 2)
+        studio_name = ""
+        studio_address = ""
+        studio_tel = ""
+        try:
+            studio_response = client.get_studio(studio_id)
+            studio_data = studio_response.get("data", {}).get("studio", {})
+            studio_name = studio_data.get("name", "")
+            studio_address = studio_data.get("address", "")
+            studio_tel = studio_data.get("tel", "")
+        except:
+            pass
+        
+        # プログラム情報を取得
+        program_name = ""
+        price = 0
+        try:
+            program_response = client.get_program(program_id)
+            program_data = program_response.get("data", {}).get("program", {})
+            program_name = program_data.get("name", "")
+            price = program_data.get("price", 0)
+        except:
+            pass
+        
+        # メール送信モック
+        base_url = request.headers.get("Origin", "")
+        send_reservation_email_mock(
+            reservation_id=reservation_id,
+            guest_name=guest_name,
+            guest_email=guest_email,
+            guest_phone=guest_phone,
+            studio_name=studio_name,
+            studio_address=studio_address,
+            studio_tel=studio_tel,
+            program_name=program_name,
+            reservation_date=reservation_date,
+            reservation_time=reservation_time,
+            duration_minutes=duration_minutes,
+            price=price,
+            base_url=base_url
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send email mock: {e}")
+    
     return jsonify({
         "success": True,
         "reservation": {
-            "id": reservation.get("id"),
+            "id": reservation_id,
             "member_id": member_id,
             "studio_room_id": studio_room_id,
             "program_id": program_id,
