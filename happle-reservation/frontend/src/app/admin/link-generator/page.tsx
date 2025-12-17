@@ -76,7 +76,8 @@ function LinkGeneratorContent() {
     if (utmCampaign) params.set('utm_campaign', utmCampaign)
     
     const queryString = params.toString()
-    const url = queryString ? `${baseUrl}?${queryString}` : baseUrl
+    // 自由枠予約画面へのリンクを生成
+    const url = queryString ? `${baseUrl}/free-schedule?${queryString}` : `${baseUrl}/free-schedule`
     
     setGeneratedUrl(url)
     setCopied(false)

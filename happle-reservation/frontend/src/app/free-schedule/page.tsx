@@ -20,6 +20,12 @@ function FreeScheduleContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const initialStudioId = searchParams.get('studio_id')
+  const initialProgramId = searchParams.get('program_id')
+  
+  // UTMパラメータを保持
+  const utmSource = searchParams.get('utm_source')
+  const utmMedium = searchParams.get('utm_medium')
+  const utmCampaign = searchParams.get('utm_campaign')
 
   // State for Selection Flow
   const [studios, setStudios] = useState<Studio[]>([])
@@ -75,6 +81,14 @@ function FreeScheduleContent() {
         // Load Programs
         const programsData = await getPrograms(studio.id)
         setPrograms(programsData)
+        
+        // URLパラメータでプログラムが指定されている場合は自動選択
+        if (initialProgramId) {
+          const initialProgram = programsData.find(p => p.id === parseInt(initialProgramId))
+          if (initialProgram) {
+            setSelectedProgram(initialProgram)
+          }
+        }
         
         // Load Rooms & Find Choice Room
         const roomsData = await getStudioRooms(studio.id)
@@ -239,6 +253,11 @@ function FreeScheduleContent() {
     params.set('start_at', slot.startAt)
     if (selectedStudio) params.set('studio_id', selectedStudio.id.toString())
     if (selectedProgram) params.set('program_id', selectedProgram.id.toString())
+    
+    // UTMパラメータを引き継ぎ
+    if (utmSource) params.set('utm_source', utmSource)
+    if (utmMedium) params.set('utm_medium', utmMedium)
+    if (utmCampaign) params.set('utm_campaign', utmCampaign)
     
     router.push(`/free-booking?${params.toString()}`)
   }

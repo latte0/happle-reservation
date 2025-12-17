@@ -30,6 +30,12 @@ function FreeBookingContent() {
   const dateStr = searchParams.get('date') // Optional: might be parsed from startAt
   const timeStr = searchParams.get('time') // Optional
   const studioId = searchParams.get('studio_id')
+  const programIdParam = searchParams.get('program_id')
+  
+  // UTMパラメータを取得
+  const utmSource = searchParams.get('utm_source')
+  const utmMedium = searchParams.get('utm_medium')
+  const utmCampaign = searchParams.get('utm_campaign')
 
   // Derive date and time from startAt if not provided explicitly
   const parsedStartAt = startAt ? parse(startAt, 'yyyy-MM-dd HH:mm:ss.SSS', new Date()) : null
@@ -67,8 +73,15 @@ function FreeBookingContent() {
         // プログラム一覧を取得
         const programsData = await getPrograms(studioId ? parseInt(studioId) : undefined)
         setPrograms(programsData)
-        // 最初のプログラムをデフォルト選択（またはクエリパラメータから指定があればそれを）
-        if (programsData.length > 0) {
+        // URLパラメータでプログラムが指定されていればそれを選択、なければ最初のプログラムを選択
+        if (programIdParam) {
+          const targetProgram = programsData.find(p => p.id === parseInt(programIdParam))
+          if (targetProgram) {
+            setSelectedProgram(targetProgram)
+          } else if (programsData.length > 0) {
+            setSelectedProgram(programsData[0])
+          }
+        } else if (programsData.length > 0) {
           setSelectedProgram(programsData[0])
         }
       } catch (err) {
@@ -179,6 +192,19 @@ function FreeBookingContent() {
         params.set('name', formData.name)
         params.set('email', formData.email)
         params.set('type', 'free')
+        params.set('studio_id', studioId || '')
+        params.set('program_id', selectedProgram.id.toString())
+        params.set('program_name', selectedProgram.name)
+        params.set('reservation_date', displayDateStr)
+        params.set('reservation_time', displayTimeStr)
+        params.set('duration', selectedProgram.duration?.toString() || '')
+        params.set('price', selectedProgram.price?.toString() || '')
+        
+        // UTMパラメータを引き継ぎ
+        if (utmSource) params.set('utm_source', utmSource)
+        if (utmMedium) params.set('utm_medium', utmMedium)
+        if (utmCampaign) params.set('utm_campaign', utmCampaign)
+        
         router.push(`/complete?${params.toString()}`)
       } else {
         setError(result.message || '予約に失敗しました')
