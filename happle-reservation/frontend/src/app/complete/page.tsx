@@ -10,6 +10,8 @@ function CompleteContent() {
   
   // 予約情報
   const reservationId = searchParams.get('reservation_id')
+  const memberId = searchParams.get('member_id')
+  const verifyHash = searchParams.get('verify')
   const name = searchParams.get('name')
   const email = searchParams.get('email')
   
@@ -60,9 +62,9 @@ function CompleteContent() {
       reservationDate, reservationTime, duration, price, name, email,
       utmSource, utmMedium, utmCampaign])
 
-  // 予約確認ページのURL
-  const reservationDetailUrl = reservationId 
-    ? `/reservation-detail?reservation_id=${reservationId}` 
+  // 予約確認ページのURL（member_id + verifyハッシュで認証）
+  const reservationDetailUrl = reservationId && memberId && verifyHash
+    ? `/reservation-detail?reservation_id=${reservationId}&member_id=${memberId}&verify=${verifyHash}` 
     : null
 
   return (

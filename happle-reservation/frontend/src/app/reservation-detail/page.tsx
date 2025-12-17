@@ -9,6 +9,8 @@ function ReservationDetailContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const reservationId = searchParams.get('reservation_id')
+  const memberId = searchParams.get('member_id')
+  const verifyHash = searchParams.get('verify')
   
   const [detail, setDetail] = useState<ReservationDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -19,19 +21,24 @@ function ReservationDetailContent() {
 
   useEffect(() => {
     async function loadReservation() {
-      if (!reservationId) {
-        setError('予約IDが指定されていません')
+      // 認証パラメータのチェック
+      if (!reservationId || !memberId || !verifyHash) {
+        setError('認証情報が不足しています。正しいリンクからアクセスしてください。')
         setLoading(false)
         return
       }
       
       try {
         setLoading(true)
-        const data = await getReservationDetail(parseInt(reservationId))
+        const data = await getReservationDetail(
+          parseInt(reservationId),
+          parseInt(memberId),
+          verifyHash
+        )
         if (data) {
           setDetail(data)
         } else {
-          setError('予約が見つかりませんでした')
+          setError('予約が見つからないか、認証に失敗しました')
         }
       } catch (err) {
         setError('予約情報の取得に失敗しました')
@@ -42,19 +49,27 @@ function ReservationDetailContent() {
     }
     
     loadReservation()
-  }, [reservationId])
+  }, [reservationId, memberId, verifyHash])
 
   const handleCancel = async () => {
-    if (!reservationId) return
+    if (!reservationId || !memberId || !verifyHash) return
     
     setCanceling(true)
     try {
-      const result = await cancelReservation(parseInt(reservationId))
+      const result = await cancelReservation(
+        parseInt(reservationId),
+        parseInt(memberId),
+        verifyHash
+      )
       if (result.success) {
         setCancelSuccess(true)
         setShowCancelConfirm(false)
         // 予約情報を再取得
-        const data = await getReservationDetail(parseInt(reservationId))
+        const data = await getReservationDetail(
+          parseInt(reservationId),
+          parseInt(memberId),
+          verifyHash
+        )
         if (data) {
           setDetail(data)
         }

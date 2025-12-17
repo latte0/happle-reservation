@@ -149,6 +149,8 @@ function BookingContent() {
       if (result.success && result.reservation) {
         const params = new URLSearchParams()
         params.set('reservation_id', result.reservation.id.toString())
+        params.set('member_id', result.reservation.member_id.toString())
+        if (result.verify) params.set('verify', result.verify)
         params.set('name', formData.name)
         params.set('email', formData.email)
         router.push(`/complete?${params.toString()}`)

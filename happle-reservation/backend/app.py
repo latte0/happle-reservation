@@ -7,6 +7,7 @@ hacomono APIを使用した予約システムのバックエンドAPI
 import os
 import json
 import logging
+import hashlib
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -71,6 +72,49 @@ def handle_errors(f):
     return decorated_function
 
 
+# ==================== セキュリティ: 認証ハッシュ ====================
+
+# ハッシュ生成用のシークレットソルト（環境変数から取得、なければデフォルト）
+VERIFICATION_SALT = os.environ.get("VERIFICATION_SALT", "happle-reservation-secret-salt-2024")
+
+
+def generate_verification_hash(email: str, phone: str) -> str:
+    """メールアドレスと電話番号から認証用ハッシュを生成
+    
+    Args:
+        email: メールアドレス
+        phone: 電話番号
+        
+    Returns:
+        SHA256ハッシュの先頭16文字（URLに含めやすい長さ）
+    """
+    # 正規化: 小文字化、スペース・ハイフン除去
+    normalized_email = email.lower().strip()
+    normalized_phone = phone.replace("-", "").replace(" ", "").strip()
+    
+    # ソルト付きでハッシュ生成
+    data = f"{normalized_email}:{normalized_phone}:{VERIFICATION_SALT}"
+    hash_value = hashlib.sha256(data.encode('utf-8')).hexdigest()
+    
+    # 先頭16文字を返す（URLに含めやすい長さ）
+    return hash_value[:16]
+
+
+def verify_hash(email: str, phone: str, provided_hash: str) -> bool:
+    """提供されたハッシュが正しいか検証
+    
+    Args:
+        email: メールアドレス
+        phone: 電話番号
+        provided_hash: URLから取得したハッシュ
+        
+    Returns:
+        ハッシュが一致すればTrue
+    """
+    expected_hash = generate_verification_hash(email, phone)
+    return expected_hash == provided_hash
+
+
 # ==================== メール送信モック ====================
 
 # メール保存ディレクトリ
@@ -80,6 +124,7 @@ EMAILS_DIR.mkdir(parents=True, exist_ok=True)
 
 def send_reservation_email_mock(
     reservation_id: int,
+    member_id: int,
     guest_name: str,
     guest_email: str,
     guest_phone: str,
@@ -98,6 +143,7 @@ def send_reservation_email_mock(
     
     Args:
         reservation_id: 予約ID
+        member_id: メンバーID（キャンセル時に必要）
         guest_name: ゲスト名
         guest_email: メールアドレス
         guest_phone: 電話番号
@@ -114,8 +160,11 @@ def send_reservation_email_mock(
     """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     
-    # 予約確認URL
-    detail_url = f"{base_url}/reservation-detail?reservation_id={reservation_id}" if base_url else f"/reservation-detail?reservation_id={reservation_id}"
+    # 認証用ハッシュを生成
+    verify_hash = generate_verification_hash(guest_email, guest_phone)
+    
+    # 予約確認URL（member_id + ハッシュを含める）
+    detail_url = f"{base_url}/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}" if base_url else f"/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}"
     
     email_content = f"""
 ================================================================================
@@ -966,6 +1015,7 @@ def create_reservation():
         base_url = request.headers.get("Origin", "")
         send_reservation_email_mock(
             reservation_id=reservation_id,
+            member_id=member_id,
             guest_name=data["guest_name"],
             guest_email=data["guest_email"],
             guest_phone=data["guest_phone"],
@@ -982,6 +1032,9 @@ def create_reservation():
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
     
+    # 認証用ハッシュを生成（フロントエンドに返す）
+    verify_hash_value = generate_verification_hash(data["guest_email"], data["guest_phone"])
+    
     return jsonify({
         "success": True,
         "reservation": {
@@ -991,6 +1044,7 @@ def create_reservation():
             "status": reservation.get("status"),
             "created_at": reservation.get("created_at")
         },
+        "verify": verify_hash_value,
         "message": "予約が完了しました"
     }), 201
 
@@ -998,11 +1052,34 @@ def create_reservation():
 @app.route("/api/reservations/<int:reservation_id>", methods=["GET"])
 @handle_errors
 def get_reservation(reservation_id: int):
-    """予約詳細を取得（拡張版）"""
+    """予約詳細を取得（拡張版）
+    
+    セキュリティのため、member_id + verifyハッシュで認証
+    """
     client = get_hacomono_client()
+    
+    # 認証パラメータを取得
+    provided_member_id = request.args.get("member_id", type=int)
+    provided_verify = request.args.get("verify")
+    
+    if not provided_member_id or not provided_verify:
+        return jsonify({
+            "error": "認証情報が不足しています",
+            "message": "正しいリンクからアクセスしてください"
+        }), 400
+    
     response = client.get_reservation(reservation_id)
     
     reservation = response.get("data", {}).get("reservation", {})
+    
+    # 予約のmember_idと一致するか確認
+    actual_member_id = reservation.get("member_id")
+    if actual_member_id != provided_member_id:
+        logger.warning(f"Member ID mismatch for reservation {reservation_id}: provided={provided_member_id}, actual={actual_member_id}")
+        return jsonify({
+            "error": "認証に失敗しました",
+            "message": "正しいリンクからアクセスしてください"
+        }), 403
     
     # 予約ステータスの日本語変換
     status_map = {
@@ -1021,21 +1098,36 @@ def get_reservation(reservation_id: int):
     program_info = {}
     lesson_info = {}
     
-    # メンバー情報
+    # メンバー情報を取得してハッシュを検証
     member_id = reservation.get("member_id")
     if member_id:
         try:
             member_response = client.get_member(member_id)
             member_data = member_response.get("data", {}).get("member", {})
+            member_email = member_data.get("mail_address", "")
+            member_phone = member_data.get("tel", "")
+            
+            # ハッシュ検証
+            if not verify_hash(member_email, member_phone, provided_verify):
+                logger.warning(f"Hash verification failed for reservation {reservation_id}, member {member_id}")
+                return jsonify({
+                    "error": "認証に失敗しました",
+                    "message": "正しいリンクからアクセスしてください"
+                }), 403
+            
             member_info = {
                 "id": member_id,
                 "name": f"{member_data.get('last_name', '')} {member_data.get('first_name', '')}".strip(),
                 "name_kana": f"{member_data.get('last_name_kana', '')} {member_data.get('first_name_kana', '')}".strip(),
-                "email": member_data.get("mail_address", ""),
-                "phone": member_data.get("tel", "")
+                "email": member_email,
+                "phone": member_phone
             }
         except Exception as e:
             logger.warning(f"Failed to get member info: {e}")
+            return jsonify({
+                "error": "認証処理中にエラーが発生しました",
+                "message": "時間をおいて再度お試しください"
+            }), 500
     
     # レッスン情報（固定枠の場合）
     studio_lesson_id = reservation.get("studio_lesson_id")
@@ -1371,6 +1463,7 @@ def create_choice_reservation():
         base_url = request.headers.get("Origin", "")
         send_reservation_email_mock(
             reservation_id=reservation_id,
+            member_id=member_id,
             guest_name=guest_name,
             guest_email=guest_email,
             guest_phone=guest_phone,
@@ -1387,6 +1480,9 @@ def create_choice_reservation():
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
     
+    # 認証用ハッシュを生成（フロントエンドに返す）
+    verify_hash_value = generate_verification_hash(guest_email, guest_phone)
+    
     return jsonify({
         "success": True,
         "reservation": {
@@ -1399,6 +1495,7 @@ def create_choice_reservation():
             "status": reservation.get("status"),
             "created_at": reservation.get("created_at")
         },
+        "verify": verify_hash_value,
         "message": "予約が完了しました"
     }), 201
 
@@ -1406,10 +1503,54 @@ def create_choice_reservation():
 @app.route("/api/reservations/<int:reservation_id>/cancel", methods=["POST"])
 @handle_errors
 def cancel_reservation(reservation_id: int):
-    """予約をキャンセル"""
+    """予約をキャンセル
+    
+    セキュリティのため、member_id + verifyハッシュで認証
+    hacomono APIでは member_id と reservation_ids の両方が必要
+    """
     client = get_hacomono_client()
     
-    response = client.cancel_reservation([reservation_id])
+    data = request.get_json() or {}
+    member_id = data.get("member_id")
+    provided_verify = data.get("verify")
+    
+    if not member_id:
+        return jsonify({
+            "success": False,
+            "error": "member_id is required",
+            "message": "キャンセルにはメンバーIDが必要です"
+        }), 400
+    
+    if not provided_verify:
+        return jsonify({
+            "success": False,
+            "error": "verify is required",
+            "message": "認証情報が不足しています"
+        }), 400
+    
+    # メンバー情報を取得してハッシュを検証
+    try:
+        member_response = client.get_member(member_id)
+        member_data = member_response.get("data", {}).get("member", {})
+        member_email = member_data.get("mail_address", "")
+        member_phone = member_data.get("tel", "")
+        
+        if not verify_hash(member_email, member_phone, provided_verify):
+            logger.warning(f"Hash verification failed for reservation {reservation_id}, member {member_id}")
+            return jsonify({
+                "success": False,
+                "error": "verification_failed",
+                "message": "認証に失敗しました。正しいリンクからアクセスしてください。"
+            }), 403
+    except Exception as e:
+        logger.error(f"Failed to verify member: {e}")
+        return jsonify({
+            "success": False,
+            "error": "verification_error",
+            "message": "認証処理中にエラーが発生しました"
+        }), 500
+    
+    response = client.cancel_reservation(member_id, [reservation_id])
     
     return jsonify({
         "success": True,

@@ -389,9 +389,17 @@ class HacomonoClient:
         """
         return self.post("/reservation/reservations/choice/reserve-context", data=context_data)
     
-    def cancel_reservation(self, reservation_ids: List[int]) -> Dict[str, Any]:
-        """予約をキャンセル"""
-        return self.put("/reservation/reservations/cancel", data={"ids": reservation_ids})
+    def cancel_reservation(self, member_id: int, reservation_ids: List[int]) -> Dict[str, Any]:
+        """予約をキャンセル
+        
+        Args:
+            member_id: メンバーID（必須）
+            reservation_ids: 予約IDのリスト（必須）
+        """
+        return self.put("/reservation/reservations/cancel", data={
+            "member_id": member_id,
+            "reservation_ids": reservation_ids
+        })
     
     # ==================== チケット API ====================
     

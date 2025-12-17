@@ -255,8 +255,8 @@ export async function getSchedule(params: {
 
 export async function createReservation(
   data: ReservationRequest
-): Promise<{ success: boolean; reservation?: Reservation; error?: string; message?: string }> {
-  const response = await fetchApi<{ success: boolean; reservation: Reservation; message: string }>(
+): Promise<{ success: boolean; reservation?: Reservation; verify?: string; error?: string; message?: string }> {
+  const response = await fetchApi<{ success: boolean; reservation: Reservation; verify: string; message: string }>(
     '/api/reservations',
     {
       method: 'POST',
@@ -271,6 +271,7 @@ export async function createReservation(
   return {
     success: response.data?.success || false,
     reservation: response.data?.reservation,
+    verify: response.data?.verify,
     message: response.data?.message,
   }
 }
@@ -280,8 +281,16 @@ export async function getReservation(reservationId: number): Promise<Reservation
   return response.data?.reservation || null
 }
 
-export async function getReservationDetail(reservationId: number): Promise<ReservationDetail | null> {
-  const response = await fetchApi<ReservationDetail>(`/api/reservations/${reservationId}`)
+export async function getReservationDetail(
+  reservationId: number,
+  memberId: number,
+  verify: string
+): Promise<ReservationDetail | null> {
+  const params = new URLSearchParams({
+    member_id: memberId.toString(),
+    verify: verify
+  })
+  const response = await fetchApi<ReservationDetail>(`/api/reservations/${reservationId}?${params.toString()}`)
   if (response.error || !response.data) {
     return null
   }
@@ -289,11 +298,16 @@ export async function getReservationDetail(reservationId: number): Promise<Reser
 }
 
 export async function cancelReservation(
-  reservationId: number
+  reservationId: number,
+  memberId: number,
+  verify: string
 ): Promise<{ success: boolean; error?: string }> {
   const response = await fetchApi<{ success: boolean }>(
     `/api/reservations/${reservationId}/cancel`,
-    { method: 'POST' }
+    { 
+      method: 'POST',
+      body: JSON.stringify({ member_id: memberId, verify: verify })
+    }
   )
   
   if (response.error) {
@@ -343,8 +357,8 @@ export async function getAvailableInstructors(params: {
 
 export async function createChoiceReservation(
   data: ChoiceReservationRequest
-): Promise<{ success: boolean; reservation?: Reservation; error?: string; message?: string }> {
-  const response = await fetchApi<{ success: boolean; reservation: Reservation; message: string }>(
+): Promise<{ success: boolean; reservation?: Reservation; verify?: string; error?: string; message?: string }> {
+  const response = await fetchApi<{ success: boolean; reservation: Reservation; verify: string; message: string }>(
     '/api/reservations/choice',
     {
       method: 'POST',
@@ -359,6 +373,7 @@ export async function createChoiceReservation(
   return {
     success: response.data?.success || false,
     reservation: response.data?.reservation,
+    verify: response.data?.verify,
     message: response.data?.message,
   }
 }
