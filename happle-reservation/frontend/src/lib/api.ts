@@ -374,6 +374,32 @@ export async function getChoiceSchedule(
   return response.data?.schedule || null
 }
 
+/**
+ * 日付範囲で自由枠スケジュールを一括取得（最適化版）
+ * 7日分のスケジュールを1回のAPIコールで取得
+ */
+export async function getChoiceScheduleRange(
+  studioRoomId: number,
+  dateFrom: string,
+  dateTo: string
+): Promise<Map<string, ChoiceSchedule | null>> {
+  const response = await fetchApi<{ 
+    schedules: { [key: string]: ChoiceSchedule | null }
+    date_from: string
+    date_to: string
+  }>(
+    `/api/choice-schedule-range?studio_room_id=${studioRoomId}&date_from=${dateFrom}&date_to=${dateTo}`
+  )
+  
+  const result = new Map<string, ChoiceSchedule | null>()
+  if (response.data?.schedules) {
+    Object.entries(response.data.schedules).forEach(([date, schedule]) => {
+      result.set(date, schedule)
+    })
+  }
+  return result
+}
+
 export async function getAvailableInstructors(params: {
   studio_room_id: number
   date: string

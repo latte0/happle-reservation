@@ -1555,6 +1555,13 @@ def create_choice_reservation():
             schedule_response = client.get_choice_schedule(studio_room_id, date_str)
             schedule = schedule_response.get("data", {}).get("schedule", {})
             
+            # スタジオIDを取得（スタッフのスタジオ紐付けチェック用）
+            studio_room_service = schedule.get("studio_room_service", {})
+            studio_id = studio_room_service.get("studio_id")
+            
+            # スタッフのスタジオ紐付け情報を取得
+            instructor_studio_map = get_cached_instructor_studio_map(client)
+            
             # 利用可能なスタッフを取得
             shift_instructors = schedule.get("shift_instructor", [])
             reserved_instructors = schedule.get("reservation_assign_instructor", [])
@@ -1577,11 +1584,22 @@ def create_choice_reservation():
                     logger.warning(f"Failed to parse reserved instructor time: {e}")
                     continue
             
-            # 空いているスタッフを抽出
+            # 空いているスタッフを抽出（スタジオ紐付けもチェック）
             available_instructors = []
             for instructor in shift_instructors:
                 instructor_id = instructor.get("instructor_id")
                 try:
+                    # スタッフがスタジオに紐付けられているかチェック
+                    instructor_studio_ids = instructor_studio_map.get(instructor_id, [])
+                    if instructor_studio_ids is not None and len(instructor_studio_ids) == 0:
+                        # studio_idsが空の場合はこのスタジオでは予約不可
+                        logger.debug(f"Instructor {instructor_id} has empty studio_ids, skipping")
+                        continue
+                    if instructor_studio_ids and studio_id and studio_id not in instructor_studio_ids:
+                        # 特定のスタジオに紐付けられているが、このスタジオではない
+                        logger.debug(f"Instructor {instructor_id} not associated with studio {studio_id}, skipping")
+                        continue
+                    
                     instructor_start_str = instructor.get("start_at", "")
                     instructor_end_str = instructor.get("end_at", "")
                     if not instructor_start_str or not instructor_end_str:
@@ -1601,16 +1619,20 @@ def create_choice_reservation():
                 instructor_ids = available_instructors[:1]  # 最初の1名を使用
                 logger.info(f"Found available instructors: {available_instructors}, using: {instructor_ids}")
             else:
-                # 空いているスタッフが見つからない場合は、シフトがある最初のスタッフを使用
-                if shift_instructors:
-                    instructor_ids = [shift_instructors[0].get("instructor_id")]
-                    logger.warning(f"No available instructors found, using first shift instructor: {instructor_ids}")
-                else:
-                    instructor_ids = [1]  # フォールバック
-                    logger.warning(f"No shift instructors found, using default: {instructor_ids}")
+                # 空いているスタッフが見つからない場合はエラー
+                logger.error(f"No available instructors found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
+                return jsonify({
+                    "error": "予約の作成に失敗しました",
+                    "message": "この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
+                    "error_code": "NO_AVAILABLE_INSTRUCTOR"
+                }), 400
         except Exception as e:
-            logger.warning(f"Failed to get available instructors: {e}, using default")
-            instructor_ids = [1]  # エラー時はデフォルト
+            logger.warning(f"Failed to get available instructors: {e}")
+            return jsonify({
+                "error": "予約の作成に失敗しました",
+                "message": "スタッフ情報の取得に失敗しました。",
+                "error_code": "INSTRUCTOR_FETCH_ERROR"
+            }), 400
     
     reservation_data = {
         "member_id": member_id,
@@ -1917,6 +1939,171 @@ def get_choice_schedule():
     except HacomonoAPIError as e:
         logger.error(f"Failed to get choice schedule: {e}")
         return jsonify({"error": "Failed to get schedule", "message": str(e)}), 400
+
+
+@app.route("/api/choice-schedule-range", methods=["GET"])
+@handle_errors
+def get_choice_schedule_range():
+    """自由枠予約スケジュールを日付範囲で一括取得（最適化版）
+    
+    7日分のスケジュールを1回のリクエストで取得。
+    studio-lessonsは範囲全体で1回だけ取得し、instructor_studio_mapはキャッシュを使用。
+    """
+    client = get_hacomono_client()
+    
+    studio_room_id = request.args.get("studio_room_id", type=int)
+    date_from = request.args.get("date_from")  # YYYY-MM-DD
+    date_to = request.args.get("date_to")  # YYYY-MM-DD
+    
+    if not studio_room_id:
+        return jsonify({"error": "Missing required parameter: studio_room_id"}), 400
+    
+    if not date_from:
+        date_from = datetime.now().strftime("%Y-%m-%d")
+    
+    if not date_to:
+        # date_fromから7日後をデフォルトに
+        date_to = (datetime.strptime(date_from, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    
+    try:
+        # 日付リストを生成
+        start_date = datetime.strptime(date_from, "%Y-%m-%d")
+        end_date = datetime.strptime(date_to, "%Y-%m-%d")
+        dates = []
+        current = start_date
+        while current <= end_date:
+            dates.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+        
+        # 1. スタッフのスタジオ紐付け情報を取得（キャッシュ使用）
+        instructor_studio_map = get_cached_instructor_studio_map(client)
+        
+        # 2. 各日付のchoice/scheduleを取得
+        schedules = {}
+        actual_studio_id = None
+        
+        for date in dates:
+            try:
+                response = client.get_choice_schedule(studio_room_id, date)
+                schedule = response.get("data", {}).get("schedule", {})
+                
+                # studio_idを取得（最初の有効なレスポンスから）
+                if not actual_studio_id:
+                    studio_room = schedule.get("studio_room_service", {})
+                    actual_studio_id = studio_room.get("studio_id") if studio_room else None
+                
+                schedules[date] = {
+                    "studio_room_service": schedule.get("studio_room_service"),
+                    "shift": schedule.get("shift"),
+                    "shift_studio_business_hour": schedule.get("shift_studio_business_hour", []),
+                    "shift_instructor": schedule.get("shift_instructor", []),
+                    "reservation_assign_instructor": list(schedule.get("reservation_assign_instructor", []))
+                }
+            except Exception as e:
+                logger.warning(f"Failed to get schedule for {date}: {e}")
+                schedules[date] = None
+        
+        # 3. 固定枠レッスンを範囲全体で1回だけ取得
+        fixed_slot_lessons_by_date = {date: [] for date in dates}
+        fixed_slot_reservations_by_date = {date: [] for date in dates}
+        
+        if actual_studio_id:
+            try:
+                lessons_response = client.get_studio_lessons(
+                    query={"studio_id": actual_studio_id},
+                    date_from=date_from,
+                    date_to=date_to,
+                    fetch_all=True
+                )
+                lessons = lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
+                logger.info(f"Fetched {len(lessons)} fixed slot lessons for range {date_from} to {date_to}")
+                
+                for lesson in lessons:
+                    start_at_str = lesson.get("start_at")
+                    if not start_at_str:
+                        continue
+                    
+                    # レッスンの日付を取得
+                    lesson_date = start_at_str[:10]  # YYYY-MM-DD
+                    if lesson_date not in fixed_slot_lessons_by_date:
+                        continue
+                    
+                    fixed_slot_lessons_by_date[lesson_date].append({
+                        "id": lesson.get("id"),
+                        "start_at": lesson.get("start_at"),
+                        "end_at": lesson.get("end_at"),
+                        "instructor_id": lesson.get("instructor_id"),
+                        "instructor_ids": lesson.get("instructor_ids", []),
+                        "program_id": lesson.get("program_id"),
+                        "studio_id": lesson.get("studio_id"),
+                        "capacity": lesson.get("capacity", 0)
+                    })
+                    
+                    # 固定枠レッスンの担当スタッフを予約として追加
+                    instructor_ids = lesson.get("instructor_ids", [])
+                    if not instructor_ids and lesson.get("instructor_id"):
+                        instructor_ids = [lesson.get("instructor_id")]
+                    
+                    end_at_str = lesson.get("end_at")
+                    if not end_at_str:
+                        continue
+                    
+                    for instructor_id in instructor_ids:
+                        if instructor_id:
+                            try:
+                                start_at = datetime.fromisoformat(start_at_str.replace("Z", "+00:00"))
+                                end_at = datetime.fromisoformat(end_at_str.replace("Z", "+00:00"))
+                                
+                                blocked_start = start_at - timedelta(minutes=FIXED_SLOT_BEFORE_INTERVAL_MINUTES)
+                                blocked_end = end_at + timedelta(minutes=FIXED_SLOT_AFTER_INTERVAL_MINUTES)
+                                
+                                fixed_slot_reservations_by_date[lesson_date].append({
+                                    "entity_id": instructor_id,
+                                    "entity_type": "INSTRUCTOR",
+                                    "start_at": blocked_start.isoformat(),
+                                    "end_at": blocked_end.isoformat(),
+                                    "type": "FIXED_SLOT_LESSON"
+                                })
+                            except Exception as e:
+                                logger.warning(f"Failed to parse lesson time: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to get fixed slot lessons for range: {e}")
+        
+        # 4. 結果を統合
+        result_schedules = {}
+        for date in dates:
+            schedule = schedules.get(date)
+            if schedule:
+                # 予約情報に固定枠を統合
+                all_reservations = schedule.get("reservation_assign_instructor", [])
+                all_reservations.extend(fixed_slot_reservations_by_date.get(date, []))
+                
+                result_schedules[date] = {
+                    "date": date,
+                    "studio_id": actual_studio_id,
+                    "studio_room_service": schedule.get("studio_room_service"),
+                    "shift": schedule.get("shift"),
+                    "shift_studio_business_hour": schedule.get("shift_studio_business_hour", []),
+                    "shift_instructor": schedule.get("shift_instructor", []),
+                    "reservation_assign_instructor": all_reservations,
+                    "fixed_slot_lessons": fixed_slot_lessons_by_date.get(date, []),
+                    "fixed_slot_interval": {
+                        "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
+                        "after_minutes": FIXED_SLOT_AFTER_INTERVAL_MINUTES
+                    },
+                    "instructor_studio_map": instructor_studio_map
+                }
+            else:
+                result_schedules[date] = None
+        
+        return jsonify({
+            "schedules": result_schedules,
+            "date_from": date_from,
+            "date_to": date_to
+        })
+    except Exception as e:
+        logger.error(f"Failed to get choice schedule range: {e}")
+        return jsonify({"error": "Failed to get schedule range", "message": str(e)}), 500
 
 
 @app.route("/api/choice-reserve-context", methods=["POST"])

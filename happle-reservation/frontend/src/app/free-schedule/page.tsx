@@ -3,7 +3,7 @@
 import { useEffect, useState, Suspense, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { sendGTMEvent } from '@next/third-parties/google'
-import { getChoiceSchedule, getStudios, getPrograms, getStudioRooms, checkReservability, ChoiceSchedule, Studio, Program, StudioRoom } from '@/lib/api'
+import { getChoiceScheduleRange, getStudios, getPrograms, getStudioRooms, checkReservability, ChoiceSchedule, Studio, Program, StudioRoom } from '@/lib/api'
 import { format, addDays, startOfDay, subDays, parseISO, isSameDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
@@ -158,7 +158,8 @@ function FreeScheduleContent() {
     if (!studioRoomId || !selectedProgram) return
 
     // このeffectが実行される時点の日付をキャプチャ
-    const datesToLoad = Array.from({ length: 7 }, (_, i) => addDays(currentWeekStart, i))
+    const dateFrom = format(currentWeekStart, 'yyyy-MM-dd')
+    const dateTo = format(addDays(currentWeekStart, 6), 'yyyy-MM-dd')
     
     // リクエストIDをインクリメント
     latestRequestIdRef.current += 1
@@ -167,22 +168,15 @@ function FreeScheduleContent() {
     async function loadWeeklySchedule() {
       try {
         setScheduleLoading(true)
-        const promises = datesToLoad.map(date => 
-          getChoiceSchedule(studioRoomId!, format(date, 'yyyy-MM-dd'))
-        )
-        const results = await Promise.all(promises)
+        
+        // 1回のAPIコールで7日分のスケジュールを取得（最適化）
+        const newScheduleMap = await getChoiceScheduleRange(studioRoomId!, dateFrom, dateTo)
         
         // このリクエストが最新でなければ、状態を更新しない
         if (thisRequestId !== latestRequestIdRef.current) {
           return
         }
         
-        // 日付文字列をキーにしたマップを作成（順序に依存しない）
-        const newScheduleMap = new Map<string, ChoiceSchedule | null>()
-        datesToLoad.forEach((date, index) => {
-          const dateStr = format(date, 'yyyy-MM-dd')
-          newScheduleMap.set(dateStr, results[index])
-        })
         setScheduleMap(newScheduleMap)
       } catch (err) {
         console.error(err)
