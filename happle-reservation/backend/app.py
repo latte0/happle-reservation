@@ -1547,8 +1547,10 @@ def create_choice_reservation():
     if not instructor_ids:
         # 指定された日時の空いているスタッフを取得
         try:
-            # start_atから日付を抽出
-            start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f")
+            # start_atから日付を抽出（JSTタイムゾーンを付与）
+            from zoneinfo import ZoneInfo
+            jst = ZoneInfo("Asia/Tokyo")
+            start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
             date_str = start_datetime.strftime("%Y-%m-%d")
             
             # choice/scheduleから空いているスタッフを取得
@@ -1574,9 +1576,9 @@ def create_choice_reservation():
                     reserved_end_str = reserved.get("end_at", "")
                     if not reserved_start_str or not reserved_end_str:
                         continue
-                    # ISO8601形式の日時をパース（タイムゾーン情報を処理）
-                    reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00"))
-                    reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00"))
+                    # ISO8601形式の日時をパース（タイムゾーン情報を処理してJSTに統一）
+                    reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
+                    reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
                     # 時間が重なっているかチェック
                     if start_datetime < reserved_end and start_datetime + timedelta(minutes=30) > reserved_start:
                         reserved_instructor_ids.add(reserved.get("entity_id"))
@@ -1604,8 +1606,9 @@ def create_choice_reservation():
                     instructor_end_str = instructor.get("end_at", "")
                     if not instructor_start_str or not instructor_end_str:
                         continue
-                    instructor_start = datetime.fromisoformat(instructor_start_str.replace("Z", "+00:00"))
-                    instructor_end = datetime.fromisoformat(instructor_end_str.replace("Z", "+00:00"))
+                    # JSTに統一して比較
+                    instructor_start = datetime.fromisoformat(instructor_start_str.replace("Z", "+00:00")).astimezone(jst)
+                    instructor_end = datetime.fromisoformat(instructor_end_str.replace("Z", "+00:00")).astimezone(jst)
                 
                     # シフト時間内で、予約が入っていないスタッフ
                     if (instructor_start <= start_datetime < instructor_end and 
