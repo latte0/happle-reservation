@@ -81,6 +81,15 @@ function ScheduleContent() {
     const slotDate = parseISO(slot.start_at)
     return isSameDay(slotDate, selectedDate)
   }).sort((a, b) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime())
+  
+  // 予約可能範囲のチェック関数: 30分後以降 〜 14日後まで
+  const isWithinReservableRange = (startAt: string): boolean => {
+    const now = new Date()
+    const slotTime = parseISO(startAt)
+    const minTime = new Date(now.getTime() + 30 * 60 * 1000) // 30分後
+    const maxTime = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000) // 14日後
+    return slotTime >= minTime && slotTime <= maxTime
+  }
 
   if (loading) {
     return (
@@ -196,7 +205,8 @@ function ScheduleContent() {
             {filteredSlots.map((slot) => {
               const startTime = format(parseISO(slot.start_at), 'HH:mm')
               const endTime = format(parseISO(slot.end_at), 'HH:mm')
-              const isAvailable = slot.is_reservable && slot.available > 0
+              // 予約可能: スロットの可用性 + 予約可能範囲内（30分後〜14日後）
+              const isAvailable = slot.is_reservable && slot.available > 0 && isWithinReservableRange(slot.start_at)
               
               return (
                 <button

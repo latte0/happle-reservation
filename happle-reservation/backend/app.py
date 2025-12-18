@@ -115,6 +115,37 @@ def verify_hash(email: str, phone: str, provided_hash: str) -> bool:
     return expected_hash == provided_hash
 
 
+# ==================== 予約日時バリデーション ====================
+
+# 予約可能な時間範囲（環境変数で設定可能）
+RESERVATION_MIN_MINUTES_AHEAD = int(os.environ.get("RESERVATION_MIN_MINUTES_AHEAD", "30"))  # 最低30分後から
+RESERVATION_MAX_DAYS_AHEAD = int(os.environ.get("RESERVATION_MAX_DAYS_AHEAD", "14"))  # 最大14日後まで
+
+
+def validate_reservation_datetime(reservation_datetime: datetime) -> tuple[bool, str]:
+    """予約日時が有効範囲内かチェック
+    
+    Args:
+        reservation_datetime: 予約日時（datetime型）
+        
+    Returns:
+        (is_valid, error_message) のタプル
+    """
+    now = datetime.now()
+    
+    # 最低30分後以降かチェック
+    min_datetime = now + timedelta(minutes=RESERVATION_MIN_MINUTES_AHEAD)
+    if reservation_datetime < min_datetime:
+        return False, f"予約は{RESERVATION_MIN_MINUTES_AHEAD}分後以降の時間を選択してください"
+    
+    # 最大14日後以内かチェック
+    max_datetime = now + timedelta(days=RESERVATION_MAX_DAYS_AHEAD)
+    if reservation_datetime > max_datetime:
+        return False, f"予約は{RESERVATION_MAX_DAYS_AHEAD}日後までの日付を選択してください"
+    
+    return True, ""
+
+
 # ==================== メール送信モック ====================
 
 # メール保存ディレクトリ
@@ -805,6 +836,26 @@ def create_reservation():
     
     studio_lesson_id = data["studio_lesson_id"]
     
+    # 0. レッスンの日時を取得して予約可能範囲をチェック
+    try:
+        lesson_check = client.get_studio_lesson(studio_lesson_id)
+        lesson_data = lesson_check.get("data", {}).get("studio_lesson", {})
+        lesson_start_at = lesson_data.get("start_at")
+        
+        if lesson_start_at:
+            # ISO形式をdatetimeに変換
+            lesson_datetime = datetime.fromisoformat(lesson_start_at.replace("Z", "+00:00")).replace(tzinfo=None)
+            is_valid, error_msg = validate_reservation_datetime(lesson_datetime)
+            if not is_valid:
+                return jsonify({
+                    "success": False,
+                    "error": error_msg,
+                    "error_code": "DATETIME_OUT_OF_RANGE"
+                }), 400
+    except Exception as e:
+        logger.warning(f"Failed to validate lesson datetime: {e}")
+        # 日時チェックに失敗しても続行（後のAPIで弾かれる）
+    
     # 1. ゲストメンバーを作成してチケットを付与
     try:
         member_id, member_ticket_id = _create_guest_member(
@@ -1261,6 +1312,21 @@ def create_choice_reservation():
     guest_email = data["guest_email"]
     guest_phone = data["guest_phone"]
     guest_note = data.get("guest_note", "")
+    
+    # 0. 予約日時が有効範囲内かチェック
+    try:
+        # "yyyy-MM-dd HH:mm:ss.fff" 形式をパース
+        reservation_datetime = datetime.strptime(start_at.split(".")[0], "%Y-%m-%d %H:%M:%S")
+        is_valid, error_msg = validate_reservation_datetime(reservation_datetime)
+        if not is_valid:
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "error_code": "DATETIME_OUT_OF_RANGE"
+            }), 400
+    except ValueError as e:
+        logger.warning(f"Failed to parse start_at: {start_at}, error: {e}")
+        # パースに失敗しても続行（後のAPIで弾かれる）
     
     # 1. ゲストメンバーを作成
     name_parts = guest_name.split()

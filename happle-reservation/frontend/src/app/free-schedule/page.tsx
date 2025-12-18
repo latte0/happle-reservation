@@ -233,6 +233,19 @@ function FreeScheduleContent() {
           }
         }
 
+        // 予約可能範囲のチェック: 30分後以降 〜 14日後まで
+        const now = new Date()
+        const cellTime = new Date(date)
+        cellTime.setHours(parseInt(timeLabel.split(':')[0]), parseInt(timeLabel.split(':')[1]), 0, 0)
+        
+        const minTime = new Date(now.getTime() + 30 * 60 * 1000) // 30分後
+        const maxTime = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000) // 14日後
+        
+        // 30分以内または14日後より先は予約不可
+        if (cellTime < minTime || cellTime > maxTime) {
+          isAvailable = false
+        }
+
         rowSlots.push({
           date: date,
           time: timeLabel,
