@@ -56,6 +56,19 @@ export interface Studio {
   business_hours: string
 }
 
+// 選択可能スタッフの時間帯設定
+export interface SelectableInstructorTerm {
+  timeperiod: string  // FULLTIME, MORNING, DAYTIME, EVENING, NIGHT
+  is_reservable: boolean
+}
+
+// 選択可能スタッフ詳細
+export interface SelectableInstructorDetail {
+  type: 'ALL' | 'SPECIFIC'  // ALL: 全スタッフ, SPECIFIC: 特定スタッフのみ
+  items: number[]  // 選択可能なスタッフID（type=SPECIFICの場合）
+  terms: SelectableInstructorTerm[]  // 時間帯ごとの設定
+}
+
 export interface Program {
   id: number
   name: string
@@ -65,6 +78,13 @@ export interface Program {
   capacity: number
   price: number
   thumbnail: string | null
+  // 自由枠予約用の設定
+  service_minutes?: number  // コースの所要時間（分）
+  max_service_minutes?: number  // 最大延長時間
+  reservable_to_minutes?: number | null  // 予約締切（開始X分前まで）
+  before_interval_minutes?: number | null  // 開始前ブロック時間
+  after_interval_minutes?: number | null  // 終了後ブロック時間
+  selectable_instructor_details?: SelectableInstructorDetail[]  // 選択可能スタッフ詳細
 }
 
 export interface ScheduleSlot {
@@ -167,6 +187,7 @@ export interface ChoiceReservationRequest {
 
 export interface ChoiceSchedule {
   date: string
+  studio_id?: number  // スタジオID
   studio_room_service: {
     id: number
     name: string
@@ -197,7 +218,25 @@ export interface ChoiceSchedule {
     date: string
     start_at: string
     end_at: string
+    reservation_type?: string  // CHOICE or FIXED_SLOT_LESSON
   }>
+  // 固定枠レッスン情報
+  fixed_slot_lessons?: Array<{
+    id: number
+    start_at: string
+    end_at: string
+    instructor_id: number
+    instructor_ids: number[]
+    program_id: number
+  }>
+  // 固定枠の前後インターバル設定
+  fixed_slot_interval?: {
+    before_minutes: number
+    after_minutes: number
+  }
+  // スタッフのスタジオ紐付けマップ { "instructor_id": studio_ids[] }
+  // JSONではキーは文字列になる
+  instructor_studio_map?: Record<string, number[]>
 }
 
 export interface AvailableInstructor {
@@ -353,6 +392,45 @@ export async function getAvailableInstructors(params: {
     `/api/instructors/available?${searchParams.toString()}`
   )
   return response.data?.available_instructors || []
+}
+
+// 予約可否を事前確認
+export interface ReservabilityCheckResult {
+  is_reservable: boolean
+  reservable_num: number
+  max_reservable_num: number
+  error_message?: string
+  position?: string
+}
+
+export async function checkReservability(params: {
+  studio_room_id: number
+  program_id: number
+  start_at: string
+  instructor_ids?: number[]
+}): Promise<ReservabilityCheckResult> {
+  const response = await fetchApi<ReservabilityCheckResult>(
+    '/api/choice-reserve-context',
+    {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }
+  )
+  
+  if (response.error) {
+    return {
+      is_reservable: false,
+      reservable_num: 0,
+      max_reservable_num: 0,
+      error_message: response.message || response.error
+    }
+  }
+  
+  return response.data || {
+    is_reservable: false,
+    reservable_num: 0,
+    max_reservable_num: 0
+  }
 }
 
 export async function createChoiceReservation(

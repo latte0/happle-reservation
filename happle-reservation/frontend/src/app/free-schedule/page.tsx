@@ -3,17 +3,29 @@
 import { useEffect, useState, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { sendGTMEvent } from '@next/third-parties/google'
-import { getChoiceSchedule, getStudios, getPrograms, getStudioRooms, ChoiceSchedule, Studio, Program, StudioRoom } from '@/lib/api'
-import { format, addDays, startOfWeek, subWeeks, addWeeks, parseISO, isSameDay } from 'date-fns'
+import { getChoiceSchedule, getStudios, getPrograms, getStudioRooms, checkReservability, ChoiceSchedule, Studio, Program, StudioRoom } from '@/lib/api'
+import { format, addDays, startOfDay, subDays, parseISO, isSameDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
 // タイムスロットの型定義
+type UnavailableReason = 
+  | 'available'           // 予約可能
+  | 'holiday'             // 休業日
+  | 'outside_hours'       // 営業時間外
+  | 'fully_booked'        // 満席（全スタッフ予約済み）
+  | 'too_soon'            // 予約開始前（30分後以降から予約可能）
+  | 'too_far'             // 予約期限外（14日後まで）
+  | 'deadline_passed'     // 予約締切を過ぎている
+  | 'interval_blocked'    // インターバルでブロック中
+  | 'no_selectable_staff' // 選択可能なスタッフがいない
+
 interface GridSlot {
   date: Date
   time: string
   startAt: string
   available: boolean
   isHoliday: boolean
+  unavailableReason: UnavailableReason
 }
 
 function FreeScheduleContent() {
@@ -39,8 +51,8 @@ function FreeScheduleContent() {
   
   const [studioRoomId, setStudioRoomId] = useState<number | null>(null)
 
-  // Calendar State
-  const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 1 }))
+  // Calendar State - 今日を起点に7日間表示
+  const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() => startOfDay(new Date()))
   const [weeklySchedules, setWeeklySchedules] = useState<(ChoiceSchedule | null)[]>([])
   const [loading, setLoading] = useState(true)
   const [initializing, setInitializing] = useState(hasUrlParams) // URLパラメータからの初期化中
@@ -160,6 +172,66 @@ function FreeScheduleContent() {
   }, [studioRoomId, selectedProgram, currentWeekStart])
 
 
+  // スタッフがスタジオに紐付けられているかチェック
+  const isInstructorAssociatedWithStudio = (instructorId: number, schedule: ChoiceSchedule | null): boolean => {
+    if (!schedule) return false
+    
+    const studioId = schedule.studio_id
+    if (!studioId) return true  // スタジオIDがない場合は制限なし
+    
+    const instructorStudioMap = schedule.instructor_studio_map
+    if (!instructorStudioMap) return true  // マップがない場合は制限なし
+    
+    // JSONではキーが文字列になるため、文字列に変換してアクセス
+    const instructorStudioIds = instructorStudioMap[String(instructorId)]
+    if (!instructorStudioIds || instructorStudioIds.length === 0) {
+      // スタッフがどのスタジオにも紐付けられていない場合は予約不可
+      return false
+    }
+    
+    return instructorStudioIds.includes(studioId)
+  }
+
+  // スタッフが選択可能かチェックするヘルパー関数
+  const isInstructorSelectable = (instructorId: number): boolean => {
+    const details = selectedProgram?.selectable_instructor_details
+    if (!details || details.length === 0) return true  // 設定なし = 全員選択可能
+    
+    // 最初の設定を使用（通常は1つのみ）
+    const detail = details[0]
+    if (detail.type === 'ALL') return true  // 全てから選択可能
+    if (detail.type === 'SPECIFIC') {
+      return detail.items.includes(instructorId)  // 指定されたスタッフのみ
+    }
+    return true
+  }
+
+  // インターバルを考慮した予約済み判定
+  const isBlockedByInterval = (
+    instructorId: number,
+    cellTime: Date,
+    cellEndTime: Date,
+    reservedSlots: Array<{ entity_id: number; start_at: string; end_at: string }>
+  ): boolean => {
+    const beforeInterval = selectedProgram?.before_interval_minutes || 0
+    const afterInterval = selectedProgram?.after_interval_minutes || 0
+    
+    return reservedSlots.some(res => {
+      if (res.entity_id !== instructorId) return false
+      
+      const resStart = parseISO(res.start_at)
+      const resEnd = parseISO(res.end_at)
+      
+      // インターバルを考慮したブロック範囲
+      // 予約の before_interval 分前から after_interval 分後までがブロック
+      const blockStart = new Date(resStart.getTime() - beforeInterval * 60000)
+      const blockEnd = new Date(resEnd.getTime() + afterInterval * 60000)
+      
+      // このスロットがブロック範囲と重複するか
+      return cellTime < blockEnd && cellEndTime > blockStart
+    })
+  }
+
   // Grid Generation Logic (Same as before)
   const generateGrid = () => {
     if (!weeklySchedules.length) return []
@@ -182,6 +254,15 @@ function FreeScheduleContent() {
       })
     })
 
+    // コースの所要時間（分）: プログラムから取得、なければintervalを使用
+    const serviceMinutes = selectedProgram?.service_minutes || interval
+    
+    // 表示間隔もコースの所要時間に合わせる（60分コースなら60分刻み）
+    const displayInterval = serviceMinutes
+    
+    // 予約締切時間（開始X分前まで）: プログラムから取得、デフォルトは0（直前まで可）
+    const reservableToMinutes = selectedProgram?.reservable_to_minutes ?? 0
+
     const rows = []
     let currentTime = new Date()
     currentTime.setHours(minStartHour, 0, 0, 0)
@@ -196,42 +277,7 @@ function FreeScheduleContent() {
         const schedule = weeklySchedules[index]
         let isAvailable = false
         let isHoliday = true
-
-        if (schedule) {
-          const businessHour = schedule.shift_studio_business_hour?.find(
-            bh => !bh.is_holiday && isSameDay(parseISO(bh.date), date)
-          )
-
-          if (businessHour) {
-            isHoliday = false
-            const bhStart = parseISO(businessHour.start_at)
-            const bhEnd = parseISO(businessHour.end_at)
-            
-            const cellTime = new Date(date)
-            cellTime.setHours(currentTime.getHours(), currentTime.getMinutes(), 0, 0)
-            const cellEndTime = new Date(cellTime.getTime() + interval * 60000)
-
-            if (cellTime >= bhStart && cellEndTime <= bhEnd) {
-              const shiftInstructors = schedule.shift_instructor || []
-              const reservedSlots = schedule.reservation_assign_instructor || []
-              
-              let availableCount = 0
-              for (const instructor of shiftInstructors) {
-                  const instStart = parseISO(instructor.start_at)
-                  const instEnd = parseISO(instructor.end_at)
-                  if (cellTime >= instStart && cellEndTime <= instEnd) {
-                      const isReserved = reservedSlots.some(res => 
-                          res.entity_id === instructor.instructor_id &&
-                          parseISO(res.start_at) < cellEndTime &&
-                          parseISO(res.end_at) > cellTime
-                      )
-                      if (!isReserved) availableCount++
-                  }
-              }
-              isAvailable = availableCount > 0
-            }
-          }
-        }
+        let unavailableReason: UnavailableReason = 'holiday' // デフォルト: 休業日
 
         // 予約可能範囲のチェック: 30分後以降 〜 14日後まで
         const now = new Date()
@@ -241,9 +287,106 @@ function FreeScheduleContent() {
         const minTime = new Date(now.getTime() + 30 * 60 * 1000) // 30分後
         const maxTime = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000) // 14日後
         
-        // 30分以内または14日後より先は予約不可
-        if (cellTime < minTime || cellTime > maxTime) {
-          isAvailable = false
+        // 予約締切時間のチェック（開始X分前まで）
+        const deadlineTime = new Date(cellTime.getTime() - reservableToMinutes * 60000)
+        
+        // コース終了時刻を計算（表示間隔ではなく、コースの所要時間を使用）
+        const cellEndTime = new Date(cellTime.getTime() + serviceMinutes * 60000)
+        
+        // 時間範囲チェックを先に行う
+        if (cellTime < minTime) {
+          unavailableReason = 'too_soon'
+        } else if (cellTime > maxTime) {
+          unavailableReason = 'too_far'
+        } else if (now > deadlineTime) {
+          // 予約締切を過ぎている
+          unavailableReason = 'deadline_passed'
+        } else if (schedule) {
+          const businessHour = schedule.shift_studio_business_hour?.find(
+            bh => !bh.is_holiday && isSameDay(parseISO(bh.date), date)
+          )
+
+          if (businessHour) {
+            isHoliday = false
+            const bhStart = parseISO(businessHour.start_at)
+            const bhEnd = parseISO(businessHour.end_at)
+
+            // 営業時間内にコースが収まるかチェック
+            if (cellTime >= bhStart && cellEndTime <= bhEnd) {
+              const shiftInstructors = schedule.shift_instructor || []
+              const reservedSlots = schedule.reservation_assign_instructor || []
+              
+              let availableCount = 0
+              let hasInstructorInSlot = false
+              let hasSelectableInstructor = false
+              let isIntervalBlocked = false
+              
+              // 重複するinstructor_idを除外（ユニークなスタッフのみ）
+              const uniqueInstructorIds = new Set<number>()
+              
+              for (const instructor of shiftInstructors) {
+                  // 同じinstructor_idは1回だけ処理
+                  if (uniqueInstructorIds.has(instructor.instructor_id)) continue
+                  uniqueInstructorIds.add(instructor.instructor_id)
+                  
+                  const instStart = parseISO(instructor.start_at)
+                  const instEnd = parseISO(instructor.end_at)
+                  
+                  // スタッフのシフト時間内にコースが収まるかチェック
+                  if (cellTime >= instStart && cellEndTime <= instEnd) {
+                      hasInstructorInSlot = true
+                      
+                      // スタッフがスタジオに紐付けられているかチェック
+                      if (!isInstructorAssociatedWithStudio(instructor.instructor_id, schedule)) {
+                        continue  // スタジオに紐付けられていないスタッフはスキップ
+                      }
+                      
+                      // 選択可能スタッフかチェック（プログラム設定）
+                      if (!isInstructorSelectable(instructor.instructor_id)) {
+                        continue  // 選択不可のスタッフはスキップ
+                      }
+                      hasSelectableInstructor = true
+                      
+                      // インターバルを考慮した予約済みチェック
+                      const isBlocked = isBlockedByInterval(
+                        instructor.instructor_id,
+                        cellTime,
+                        cellEndTime,
+                        reservedSlots
+                      )
+                      
+                      if (isBlocked) {
+                        isIntervalBlocked = true
+                      } else {
+                        availableCount++
+                      }
+                  }
+              }
+              
+              if (availableCount > 0) {
+                isAvailable = true
+                unavailableReason = 'available'
+              } else if (!hasSelectableInstructor && hasInstructorInSlot) {
+                // シフトに入っているが選択可能なスタッフがいない
+                unavailableReason = 'no_selectable_staff'
+              } else if (isIntervalBlocked) {
+                // インターバルでブロックされている
+                unavailableReason = 'interval_blocked'
+              } else if (hasInstructorInSlot) {
+                // スタッフがいるが全員予約済み = 満席
+                unavailableReason = 'fully_booked'
+              } else {
+                // スタッフがシフトに入っていない = 営業時間外
+                unavailableReason = 'outside_hours'
+              }
+            } else {
+              // 営業時間外（コースが営業時間を超える）
+              unavailableReason = 'outside_hours'
+            }
+          } else {
+            // 休業日
+            unavailableReason = 'holiday'
+          }
         }
 
         rowSlots.push({
@@ -251,12 +394,13 @@ function FreeScheduleContent() {
           time: timeLabel,
           startAt: `${format(date, 'yyyy-MM-dd')} ${timeLabel}:00.000`,
           available: isAvailable,
-          isHoliday: isHoliday
+          isHoliday: isHoliday,
+          unavailableReason: unavailableReason
         })
       })
 
       rows.push({ time: timeLabel, slots: rowSlots })
-      currentTime = new Date(currentTime.getTime() + interval * 60000)
+      currentTime = new Date(currentTime.getTime() + displayInterval * 60000)
     }
     
     return rows
@@ -264,9 +408,16 @@ function FreeScheduleContent() {
 
   const gridRows = generateGrid()
 
-  const handleSlotSelect = (slot: GridSlot) => {
-    if (!slot.available) return
+  // 予約可否チェック中のスロット
+  const [checkingSlot, setCheckingSlot] = useState<string | null>(null)
+  const [slotError, setSlotError] = useState<string | null>(null)
 
+  const handleSlotSelect = async (slot: GridSlot) => {
+    if (!slot.available || !selectedProgram || !studioRoomId) return
+
+    // 事前チェックは行わず、直接予約フォームへ進む
+    // （実際の予約可否は予約実行時にhacomonoが判定）
+    
     // GTMイベント: 自由枠日時選択
     sendGTMEvent({
       event: 'slot_select',
@@ -280,7 +431,7 @@ function FreeScheduleContent() {
     })
 
     const params = new URLSearchParams()
-    params.set('studio_room_id', studioRoomId!.toString())
+    params.set('studio_room_id', studioRoomId.toString())
     params.set('start_at', slot.startAt)
     if (selectedStudio) params.set('studio_id', selectedStudio.id.toString())
     if (selectedProgram) params.set('program_id', selectedProgram.id.toString())
@@ -293,8 +444,71 @@ function FreeScheduleContent() {
     router.push(`/free-booking?${params.toString()}`)
   }
 
-  const handlePrevWeek = () => setCurrentWeekStart(subWeeks(currentWeekStart, 1))
-  const handleNextWeek = () => setCurrentWeekStart(addWeeks(currentWeekStart, 1))
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const handleSlotSelectWithCheck = async (slot: GridSlot) => {
+    if (!slot.available || !selectedProgram || !studioRoomId) return
+
+    // 既にチェック中の場合は無視
+    if (checkingSlot) return
+
+    setCheckingSlot(slot.startAt)
+    setSlotError(null)
+
+    try {
+      // hacomonoに予約可否を事前確認（現在未使用）
+      const result = await checkReservability({
+        studio_room_id: studioRoomId,
+        program_id: selectedProgram.id,
+        start_at: slot.startAt,
+      })
+
+      if (!result.is_reservable) {
+        setSlotError(result.error_message || 'この時間帯は現在予約できません。別の時間帯をお選びください。')
+        setCheckingSlot(null)
+        return
+      }
+
+      const params = new URLSearchParams()
+      params.set('studio_room_id', studioRoomId.toString())
+      params.set('start_at', slot.startAt)
+      if (selectedStudio) params.set('studio_id', selectedStudio.id.toString())
+      if (selectedProgram) params.set('program_id', selectedProgram.id.toString())
+      
+      router.push(`/free-booking?${params.toString()}`)
+    } catch (err) {
+      console.error('Failed to check reservability:', err)
+      setSlotError('予約可否の確認中にエラーが発生しました。')
+    } finally {
+      setCheckingSlot(null)
+    }
+  }
+
+  // 7日単位でナビゲーション（今日より前には戻れない、14日後までしか進めない）
+  const today = startOfDay(new Date())
+  const maxStartDate = addDays(today, 7) // 最大でも7日後を起点に（14日後まで表示）
+  
+  const handlePrevWeek = () => {
+    const newStart = subDays(currentWeekStart, 7)
+    // 今日より前には戻れない
+    if (newStart >= today) {
+      setCurrentWeekStart(newStart)
+    } else {
+      setCurrentWeekStart(today)
+    }
+  }
+  
+  const handleNextWeek = () => {
+    const newStart = addDays(currentWeekStart, 7)
+    // 14日後を超えないように
+    if (newStart <= maxStartDate) {
+      setCurrentWeekStart(newStart)
+    }
+  }
+  
+  // 前へボタンを無効にするか
+  const canGoPrev = currentWeekStart > today
+  // 次へボタンを無効にするか
+  const canGoNext = currentWeekStart < maxStartDate
 
   // URLパラメータからの初期化中、または店舗データローディング中
   if (loading || initializing) {
@@ -364,7 +578,7 @@ function FreeScheduleContent() {
                 {initialProgramId && selectedProgram ? (
                   // URLパラメータで指定されている場合は固定表示
                   <div className="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg text-gray-700 font-medium">
-                    {selectedProgram.name} ({selectedProgram.duration}分 / ¥{selectedProgram.price?.toLocaleString()})
+                    {selectedProgram.name} ({selectedProgram.service_minutes || selectedProgram.duration || '?'}分)
                   </div>
                 ) : (
                   <select 
@@ -379,7 +593,7 @@ function FreeScheduleContent() {
                       <option value="">コースを選択してください</option>
                       {programs.map(program => (
                           <option key={program.id} value={program.id}>
-                              {program.name} ({program.duration}分 / ¥{program.price?.toLocaleString()})
+                              {program.name} ({program.service_minutes || program.duration || '?'}分)
                           </option>
                       ))}
                   </select>
@@ -402,7 +616,11 @@ function FreeScheduleContent() {
             <div className="flex flex-col sm:flex-row items-center justify-between mb-4 gap-4">
                 <h3 className="text-lg font-bold text-gray-800">ご希望の日時 <span className="text-red-500 text-sm font-normal ml-1">*</span></h3>
                 <div className="flex items-center gap-4 bg-white p-1 rounded-lg border border-gray-200 shadow-sm">
-                    <button onClick={handlePrevWeek} className="p-2 hover:bg-gray-100 rounded-md transition-colors text-primary-600">
+                    <button 
+                      onClick={handlePrevWeek} 
+                      disabled={!canGoPrev}
+                      className={`p-2 rounded-md transition-colors ${canGoPrev ? 'hover:bg-gray-100 text-primary-600' : 'text-gray-300 cursor-not-allowed'}`}
+                    >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                     </button>
                     <span className="font-bold text-base min-w-[120px] text-center">
@@ -452,20 +670,65 @@ function FreeScheduleContent() {
                             {row.slots.map((slot) => {
                                 let content = <span className="text-gray-300 text-xl">×</span>
                                 let cellClass = "cursor-not-allowed bg-gray-50/50"
+                                let tooltip = ""
                                 
                                 if (slot.available) {
                                     content = <span className="text-primary-500 text-xl font-bold">◎</span>
                                     cellClass = "cursor-pointer hover:bg-primary-50 active:bg-primary-100"
-                                } else if (slot.isHoliday) {
-                                    content = <span className="text-gray-200 text-sm">-</span>
-                                    cellClass = "bg-gray-100/50"
+                                    tooltip = "予約可能"
+                                } else {
+                                    switch (slot.unavailableReason) {
+                                        case 'holiday':
+                                            content = <span className="text-gray-200 text-sm">-</span>
+                                            cellClass = "bg-gray-100/50"
+                                            tooltip = "休業日"
+                                            break
+                                        case 'outside_hours':
+                                            content = <span className="text-gray-300 text-sm">-</span>
+                                            cellClass = "bg-gray-50/50"
+                                            tooltip = "営業時間外"
+                                            break
+                                        case 'fully_booked':
+                                            content = <span className="text-red-400 text-xl">×</span>
+                                            cellClass = "bg-red-50/50"
+                                            tooltip = "満席"
+                                            break
+                                        case 'too_soon':
+                                            content = <span className="text-amber-300 text-sm">-</span>
+                                            cellClass = "bg-amber-50/30"
+                                            tooltip = "受付時間前（30分以内）"
+                                            break
+                                        case 'too_far':
+                                            content = <span className="text-gray-200 text-sm">-</span>
+                                            cellClass = "bg-gray-50/30"
+                                            tooltip = "受付期間外（14日後以降）"
+                                            break
+                                        case 'deadline_passed':
+                                            content = <span className="text-orange-300 text-sm">-</span>
+                                            cellClass = "bg-orange-50/30"
+                                            tooltip = "予約締切を過ぎています"
+                                            break
+                                        case 'interval_blocked':
+                                            content = <span className="text-purple-400 text-xl">×</span>
+                                            cellClass = "bg-purple-50/50"
+                                            tooltip = "前後の予約との間隔が必要です"
+                                            break
+                                        case 'no_selectable_staff':
+                                            content = <span className="text-gray-400 text-xl">×</span>
+                                            cellClass = "bg-gray-100/50"
+                                            tooltip = "対応可能なスタッフがいません"
+                                            break
+                                        default:
+                                            tooltip = "予約不可"
+                                    }
                                 }
 
                                 return (
                                     <td
                                         key={slot.startAt}
                                         onClick={() => handleSlotSelect(slot)}
-                                        className={`p-2 border-b border-r border-gray-100 text-center transition-all h-12 ${cellClass}`}
+                                        className={`p-2 border-b border-r border-gray-100 text-center transition-all h-12 ${cellClass} group relative`}
+                                        title={tooltip}
                                     >
                                         {content}
                                     </td>
@@ -479,16 +742,49 @@ function FreeScheduleContent() {
                 </div>
             )}
             
+            {/* Error Message */}
+            {slotError && (
+              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+                <div className="flex items-start gap-3">
+                  <div className="text-2xl">⚠️</div>
+                  <div>
+                    <p className="font-bold text-red-800 mb-1">予約できません</p>
+                    <p className="text-red-700 text-sm">{slotError}</p>
+                  </div>
+                  <button 
+                    onClick={() => setSlotError(null)}
+                    className="ml-auto text-red-400 hover:text-red-600"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Checking Overlay */}
+            {checkingSlot && (
+              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3">
+                <div className="w-5 h-5 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></div>
+                <p className="text-blue-700">予約可否を確認中...</p>
+              </div>
+            )}
+
             {/* Legend */}
-            <div className="mt-4 flex gap-6 justify-center text-sm text-gray-600">
-                <div className="flex items-center gap-2">
+            <div className="mt-4 flex flex-wrap gap-4 justify-center text-sm text-gray-600">
+                <div className="flex items-center gap-1">
                     <span className="text-primary-500 font-bold text-lg">◎</span> 予約可能
                 </div>
-                <div className="flex items-center gap-2">
-                    <span className="text-gray-300 text-lg">×</span> 予約不可/満席
+                <div className="flex items-center gap-1">
+                    <span className="text-red-400 text-lg">×</span> 満席
                 </div>
-                <div className="flex items-center gap-2">
-                    <span className="text-gray-400">-</span> 営業時間外
+                <div className="flex items-center gap-1">
+                    <span className="text-purple-400 text-lg">×</span> 間隔調整中
+                </div>
+                <div className="flex items-center gap-1">
+                    <span className="text-gray-300">-</span> 営業時間外
+                </div>
+                <div className="flex items-center gap-1">
+                    <span className="text-gray-200">-</span> 休業日
                 </div>
             </div>
         </div>

@@ -131,8 +131,12 @@ function FreeBookingContent() {
     
     if (!formData.phone.trim()) {
       errors.phone = '電話番号を入力してください'
-    } else if (!/^[\d-]{10,}$/.test(formData.phone.replace(/\s/g, ''))) {
-      errors.phone = '正しい電話番号を入力してください'
+    } else {
+      // ハイフンとスペースを除去して数字のみにする
+      const phoneDigits = formData.phone.replace(/[-\s]/g, '')
+      if (!/^\d{10,11}$/.test(phoneDigits)) {
+        errors.phone = '電話番号は10〜11桁の半角数字で入力してください（例: 09012345678）'
+      }
     }
     
     setFormErrors(errors)
@@ -209,13 +213,15 @@ function FreeBookingContent() {
         
         router.push(`/complete?${params.toString()}`)
       } else {
-        setError(result.message || '予約に失敗しました')
-        setIsConfirming(false) // エラー時は入力画面に戻す
+        // APIからのエラーメッセージを使用、なければデフォルトメッセージ
+        const errorMessage = result.message || result.error || '予約処理中にエラーが発生しました。お客様の情報は受け付けておりますので、運営よりお電話にてご連絡させていただきます。'
+        setError(errorMessage)
+        // 確認画面に留まってエラーを表示
       }
     } catch (err) {
-      setError('予約処理中にエラーが発生しました')
+      setError('予約処理中にエラーが発生しました。お客様の情報は受け付けておりますので、運営よりお電話にてご連絡させていただきます。')
       console.error(err)
-      setIsConfirming(false)
+      // 確認画面に留まってエラーを表示
     } finally {
       setSubmitting(false)
     }
@@ -300,7 +306,7 @@ function FreeBookingContent() {
                 {selectedProgram?.name}
               </div>
               <div className="text-accent-600 mt-1">
-                {selectedProgram?.duration}分 / ¥{selectedProgram?.price?.toLocaleString()}
+                {selectedProgram?.service_minutes || selectedProgram?.duration || '?'}分
               </div>
             </div>
 
@@ -332,6 +338,19 @@ function FreeBookingContent() {
               </dl>
             </div>
           </div>
+
+          {/* Error Message */}
+          {error && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+              <div className="flex items-start gap-3">
+                <div className="text-2xl">⚠️</div>
+                <div>
+                  <p className="font-bold text-red-800 mb-1">エラーが発生しました</p>
+                  <p className="text-red-700 text-sm">{error}</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex flex-col sm:flex-row gap-4">
             <button
