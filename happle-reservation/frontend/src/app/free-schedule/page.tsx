@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, Suspense } from 'react'
+import { useEffect, useState, Suspense, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { sendGTMEvent } from '@next/third-parties/google'
 import { getChoiceSchedule, getStudios, getPrograms, getStudioRooms, checkReservability, ChoiceSchedule, Studio, Program, StudioRoom } from '@/lib/api'
@@ -53,7 +53,8 @@ function FreeScheduleContent() {
 
   // Calendar State - 今日を起点に7日間表示
   const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() => startOfDay(new Date()))
-  const [weeklySchedules, setWeeklySchedules] = useState<(ChoiceSchedule | null)[]>([])
+  // 日付文字列 -> スケジュールのマップ（順序に依存しないように）
+  const [scheduleMap, setScheduleMap] = useState<Map<string, ChoiceSchedule | null>>(new Map())
   const [loading, setLoading] = useState(true)
   const [initializing, setInitializing] = useState(hasUrlParams) // URLパラメータからの初期化中
   const [scheduleLoading, setScheduleLoading] = useState(false)
@@ -99,7 +100,7 @@ function FreeScheduleContent() {
     if (!isFromUrl) {
       setSelectedProgram(null)
       setStudioRoomId(null)
-      setWeeklySchedules([])
+      setScheduleMap(new Map())
     }
     
     try {
@@ -150,11 +151,18 @@ function FreeScheduleContent() {
   }
 
   // 4. Load Schedule when Room & Program are ready
+  // リクエストIDを追跡して、古いリクエストの結果を無視する
+  const latestRequestIdRef = useRef(0)
+  
   useEffect(() => {
     if (!studioRoomId || !selectedProgram) return
 
-    // このeffectが実行される時点のweekDatesをキャプチャ
+    // このeffectが実行される時点の日付をキャプチャ
     const datesToLoad = Array.from({ length: 7 }, (_, i) => addDays(currentWeekStart, i))
+    
+    // リクエストIDをインクリメント
+    latestRequestIdRef.current += 1
+    const thisRequestId = latestRequestIdRef.current
 
     async function loadWeeklySchedule() {
       try {
@@ -164,22 +172,26 @@ function FreeScheduleContent() {
         )
         const results = await Promise.all(promises)
         
-        // 日付→スケジュールのマップを作成
-        const scheduleMap = new Map<string, ChoiceSchedule | null>()
-        datesToLoad.forEach((date, index) => {
-          scheduleMap.set(format(date, 'yyyy-MM-dd'), results[index])
-        })
+        // このリクエストが最新でなければ、状態を更新しない
+        if (thisRequestId !== latestRequestIdRef.current) {
+          return
+        }
         
-        // weekDatesの順序でスケジュール配列を再構築
-        const orderedSchedules = datesToLoad.map(date => 
-          scheduleMap.get(format(date, 'yyyy-MM-dd')) || null
-        )
-        setWeeklySchedules(orderedSchedules)
+        // 日付文字列をキーにしたマップを作成（順序に依存しない）
+        const newScheduleMap = new Map<string, ChoiceSchedule | null>()
+        datesToLoad.forEach((date, index) => {
+          const dateStr = format(date, 'yyyy-MM-dd')
+          newScheduleMap.set(dateStr, results[index])
+        })
+        setScheduleMap(newScheduleMap)
       } catch (err) {
         console.error(err)
         // Don't set global error to avoid blocking UI, just show empty calendar
       } finally {
-        setScheduleLoading(false)
+        // このリクエストが最新の場合のみローディング状態を解除
+        if (thisRequestId === latestRequestIdRef.current) {
+          setScheduleLoading(false)
+        }
       }
     }
     loadWeeklySchedule()
@@ -199,9 +211,9 @@ function FreeScheduleContent() {
     // JSONではキーが文字列になるため、文字列に変換してアクセス
     const instructorStudioIds = instructorStudioMap[String(instructorId)]
     
-    // studio_idsが未設定または空の場合は「制限なし」=全スタジオで利用可能
+    // studio_idsが未設定または空の場合は「どのスタジオにも紐付けられていない」=予約不可
     if (!instructorStudioIds || instructorStudioIds.length === 0) {
-      return true
+      return false
     }
     
     // 特定のスタジオに紐付けられている場合は、そのスタジオに含まれているかチェック
@@ -250,13 +262,14 @@ function FreeScheduleContent() {
 
   // Grid Generation Logic (Same as before)
   const generateGrid = () => {
-    if (!weeklySchedules.length) return []
+    if (scheduleMap.size === 0) return []
 
     let minStartHour = 9
     let maxEndHour = 21
     let interval = 30
 
-    weeklySchedules.forEach(schedule => {
+    // マップの全スケジュールをチェック
+    scheduleMap.forEach(schedule => {
       if (schedule?.studio_room_service?.schedule_nick) {
         interval = schedule.studio_room_service.schedule_nick
       }
@@ -289,8 +302,10 @@ function FreeScheduleContent() {
       const timeLabel = format(currentTime, 'HH:mm')
       const rowSlots: GridSlot[] = []
 
-      weekDates.forEach((date, index) => {
-        const schedule = weeklySchedules[index]
+      weekDates.forEach((date) => {
+        // 日付文字列をキーにしてスケジュールを取得（順序に依存しない）
+        const dateStr = format(date, 'yyyy-MM-dd')
+        const schedule = scheduleMap.get(dateStr) || null
         let isAvailable = false
         let isHoliday = true
         let unavailableReason: UnavailableReason = 'holiday' // デフォルト: 休業日

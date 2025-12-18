@@ -55,6 +55,60 @@ def get_hacomono_client() -> HacomonoClient:
     return _hacomono_client
 
 
+# キャッシュ: スタッフのスタジオ紐付け情報
+_instructor_studio_map_cache = None
+_instructor_studio_map_cache_time = None
+INSTRUCTOR_CACHE_TTL_SECONDS = 60  # 60秒間キャッシュ
+
+
+def get_cached_instructor_studio_map(client: HacomonoClient) -> dict:
+    """スタッフのスタジオ紐付け情報をキャッシュ付きで取得
+    
+    並列リクエストでのレート制限を回避するため、60秒間キャッシュする
+    """
+    global _instructor_studio_map_cache, _instructor_studio_map_cache_time
+    
+    now = datetime.now()
+    
+    # キャッシュが有効ならそれを返す
+    if (_instructor_studio_map_cache is not None and 
+        _instructor_studio_map_cache_time is not None and
+        (now - _instructor_studio_map_cache_time).total_seconds() < INSTRUCTOR_CACHE_TTL_SECONDS):
+        logger.debug("Using cached instructor studio map")
+        return _instructor_studio_map_cache
+    
+    # 新規取得（リトライ付き）
+    instructor_studio_map = {}
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            instructors_response = client.get_instructors({"is_active": True})
+            instructors_list = instructors_response.get("data", {}).get("instructors", {}).get("list", [])
+            for instructor in instructors_list:
+                instructor_id = instructor.get("id")
+                instructor_studio_ids = instructor.get("studio_ids", [])
+                instructor_studio_map[instructor_id] = instructor_studio_ids
+            
+            # キャッシュを更新
+            _instructor_studio_map_cache = instructor_studio_map
+            _instructor_studio_map_cache_time = now
+            logger.info(f"Loaded instructor studio map (attempt {attempt + 1}): {instructor_studio_map}")
+            return instructor_studio_map
+        except Exception as e:
+            logger.warning(f"Failed to get instructor studio map (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(0.5)  # リトライ前に少し待機
+    
+    # 全てのリトライが失敗した場合、キャッシュがあればそれを返す
+    if _instructor_studio_map_cache is not None:
+        logger.warning("Using stale cache for instructor studio map")
+        return _instructor_studio_map_cache
+    
+    return instructor_studio_map
+
+
 def handle_errors(f):
     """エラーハンドリングデコレータ"""
     @wraps(f)
@@ -1840,18 +1894,8 @@ def get_choice_schedule():
         all_instructor_reservations = list(schedule.get("reservation_assign_instructor", []))
         all_instructor_reservations.extend(fixed_slot_reservations)
         
-        # スタッフのスタジオ紐付け情報を取得（スタジオに紐付けられたスタッフのみが予約可能）
-        instructor_studio_map = {}
-        try:
-            instructors_response = client.get_instructors({"is_active": True})
-            instructors_list = instructors_response.get("data", {}).get("instructors", {}).get("list", [])
-            for instructor in instructors_list:
-                instructor_id = instructor.get("id")
-                instructor_studio_ids = instructor.get("studio_ids", [])
-                instructor_studio_map[instructor_id] = instructor_studio_ids
-            logger.info(f"Loaded instructor studio map: {instructor_studio_map}")
-        except Exception as e:
-            logger.warning(f"Failed to get instructor studio map: {e}")
+        # スタッフのスタジオ紐付け情報を取得（キャッシュ付き、リトライあり）
+        instructor_studio_map = get_cached_instructor_studio_map(client)
         
         return jsonify({
             "schedule": {
