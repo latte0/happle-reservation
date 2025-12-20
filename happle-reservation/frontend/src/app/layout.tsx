@@ -3,6 +3,8 @@ import { Noto_Sans_JP, Zen_Maru_Gothic } from 'next/font/google'
 import { GoogleTagManager } from '@next/third-parties/google'
 import './globals.css'
 
+const GTM_ID = 'GTM-ML8V2G89'
+
 const notoSans = Noto_Sans_JP({
   subsets: ['latin'],
   variable: '--font-noto-sans',
@@ -28,11 +30,18 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ja" className={`${notoSans.variable} ${zenMaru.variable}`}>
-      {/* Google Tag Manager - GTM IDは環境変数で後から一括変更可能 */}
-      {process.env.NEXT_PUBLIC_GTM_ID && (
-        <GoogleTagManager gtmId={process.env.NEXT_PUBLIC_GTM_ID} />
-      )}
+      {/* Google Tag Manager */}
+      <GoogleTagManager gtmId={GTM_ID} />
       <body className="font-sans min-h-screen">
+        {/* Google Tag Manager (noscript) */}
+        <noscript>
+          <iframe
+            src={`https://www.googletagmanager.com/ns.html?id=${GTM_ID}`}
+            height="0"
+            width="0"
+            style={{ display: 'none', visibility: 'hidden' }}
+          />
+        </noscript>
         <div className="min-h-screen flex flex-col">
           {/* Header */}
           <header className="bg-white/80 backdrop-blur-md border-b border-accent-100 sticky top-0 z-50">
