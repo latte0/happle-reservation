@@ -349,6 +349,7 @@ def send_slack_notification(
     reservation_date: str = "",
     reservation_time: str = "",
     program_name: str = "",
+    instructor_names: str = "",  # スタッフ名（カンマ区切り）
     error_message: str = "",
     error_code: str = ""
 ):
@@ -415,7 +416,12 @@ def send_slack_notification(
                 {
                     "title": "施術コース",
                     "value": program_name or "N/A",
-                    "short": False
+                    "short": True
+                },
+                {
+                    "title": "スタッフ",
+                    "value": instructor_names or "N/A",
+                    "short": True
                 }
             ]
         else:  # error
@@ -456,15 +462,25 @@ def send_slack_notification(
                     "title": "店舗名",
                     "value": studio_name or "N/A",
                     "short": True
+                },
+                {
+                    "title": "施術コース",
+                    "value": program_name or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "スタッフ",
+                    "value": instructor_names or "N/A",
+                    "short": True
                 }
             ]
         
         # テキスト形式のサマリーを作成（フォールバック用）
         if status == "success":
-            text_summary = f"✅ 予約成功\n予約ID: {reservation_id or 'N/A'}\nお客様名: {guest_name or 'N/A'}\n店舗名: {studio_name or 'N/A'}\n予約日時: {reservation_date or 'N/A'} {reservation_time or 'N/A'}"
+            text_summary = f"✅ 予約成功\n予約ID: {reservation_id or 'N/A'}\nお客様名: {guest_name or 'N/A'}\n店舗名: {studio_name or 'N/A'}\n予約日時: {reservation_date or 'N/A'} {reservation_time or 'N/A'}\n施術コース: {program_name or 'N/A'}\nスタッフ: {instructor_names or 'N/A'}"
         else:
             reservation_time_str = f"{reservation_date} {reservation_time}" if reservation_date and reservation_time else "N/A"
-            text_summary = f"❌ 予約失敗\nエラーコード: {error_code or 'N/A'}\nエラーメッセージ: {error_message or 'N/A'}\n予約希望日時: {reservation_time_str}\nお客様名: {guest_name or 'N/A'}"
+            text_summary = f"❌ 予約失敗\nエラーコード: {error_code or 'N/A'}\nエラーメッセージ: {error_message or 'N/A'}\n予約希望日時: {reservation_time_str}\n店舗名: {studio_name or 'N/A'}\n施術コース: {program_name or 'N/A'}\nスタッフ: {instructor_names or 'N/A'}\nお客様名: {guest_name or 'N/A'}"
         
         payload = {
             "text": text_summary,  # フォールバック用のテキスト
@@ -1658,6 +1674,47 @@ def create_choice_reservation():
             except Exception:
                 pass
     
+    # メニュー名を取得（エラー通知用）
+    program_name = ""
+    try:
+        program_response = client.get_program(program_id)
+        program_data = program_response.get("data", {}).get("program", {})
+        program_name = program_data.get("name", "")
+    except Exception as e:
+        logger.warning(f"Failed to get program name: {e}")
+    
+    # スタッフ名を取得するヘルパー関数（後で使用）
+    def get_instructor_names(instructor_ids_list):
+        """スタッフIDのリストからスタッフ名を取得"""
+        if not instructor_ids_list:
+            return ""
+        try:
+            instructor_names = []
+            for instructor_id in instructor_ids_list:
+                try:
+                    instructor_response = client.get_instructors({"id": instructor_id})
+                    instructors_data = instructor_response.get("data", {}).get("instructors", {})
+                    if isinstance(instructors_data, dict):
+                        instructors_list = instructors_data.get("list", [])
+                    elif isinstance(instructors_data, list):
+                        instructors_list = instructors_data
+                    else:
+                        instructors_list = []
+                    
+                    if instructors_list:
+                        instructor = instructors_list[0]
+                        last_name = instructor.get("last_name", "")
+                        first_name = instructor.get("first_name", "")
+                        instructor_name = f"{last_name} {first_name}".strip()
+                        if instructor_name:
+                            instructor_names.append(instructor_name)
+                except Exception as e:
+                    logger.warning(f"Failed to get instructor name for ID {instructor_id}: {e}")
+            return ", ".join(instructor_names) if instructor_names else ""
+        except Exception as e:
+            logger.warning(f"Failed to get instructor names: {e}")
+            return ""
+    
     # 0. 予約日時が有効範囲内かチェック
     try:
         # "yyyy-MM-dd HH:mm:ss.fff" 形式をパース
@@ -1774,6 +1831,8 @@ def create_choice_reservation():
                     studio_name=studio_name,
                     reservation_date=reservation_date,
                     reservation_time=reservation_time,
+                    program_name=program_name,
+                    instructor_names="",  # メンバー作成時点ではスタッフ未確定
                     error_message=error_info["user_message"],
                     error_code=error_info["error_code"]
                 )
@@ -1893,6 +1952,8 @@ def create_choice_reservation():
                     studio_name=studio_name,
                     reservation_date=reservation_date,
                     reservation_time=reservation_time,
+                    program_name=program_name,
+                    instructor_names="",  # スタッフが見つからないため空
                     error_message=error_msg_with_time,
                     error_code="NO_AVAILABLE_INSTRUCTOR"
                 )
@@ -1932,6 +1993,8 @@ def create_choice_reservation():
                 studio_name=studio_name,
                 reservation_date=reservation_date,
                 reservation_time=reservation_time,
+                program_name=program_name,
+                instructor_names="",  # スタッフ情報取得失敗のため空
                 error_message=error_msg_with_time,
                 error_code="INSTRUCTOR_FETCH_ERROR"
             )
@@ -1983,6 +2046,11 @@ def create_choice_reservation():
         # エラーメッセージに予約時間を追加
         error_msg_with_time = f"{error_info['user_message']}（予約希望時間: {reservation_date} {reservation_time}）" if reservation_date and reservation_time else error_info["user_message"]
         
+        # スタッフ名を取得（instructor_idsが確定している場合）
+        instructor_names = ""
+        if instructor_ids:
+            instructor_names = get_instructor_names(instructor_ids)
+        
         # Slack通知（エラー）
         send_slack_notification(
             status="error",
@@ -1992,6 +2060,8 @@ def create_choice_reservation():
             studio_name=studio_name,
             reservation_date=reservation_date,
             reservation_time=reservation_time,
+            program_name=program_name,
+            instructor_names=instructor_names,
             error_message=error_msg_with_time,
             error_code=error_info["error_code"]
         )
