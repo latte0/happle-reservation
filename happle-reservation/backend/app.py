@@ -17,6 +17,7 @@ load_dotenv()
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import requests
 
 from hacomono_client import (
     HacomonoClient,
@@ -255,17 +256,13 @@ def send_reservation_email_mock(
     # 予約確認URL（member_id + ハッシュを含める）
     detail_url = f"{base_url}/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}" if base_url else f"/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}"
     
-    email_content = f"""
-================================================================================
-予約確認メール（モック）
-送信日時: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-================================================================================
-
-{guest_name}様
+    email_content = f"""{guest_name}　様
 
 この度は「{studio_name}」にご予約いただき誠にありがとうございます。
 今回のご予約内容は以下のとおりです。
+
 ----------------------------------
+
 ■予約日時
 {reservation_date} {reservation_time}
 
@@ -287,67 +284,43 @@ def send_reservation_email_mock(
 ■予約確認URL
 {detail_url}
 
+【重要】
+公式LINEにフルネームをお送りいただきますと、ご予約完了となります。
 
-《こちらのLINEにフルネームをお送りいただきますと、ご予約完了となります》
-
-
-
+▼Asmy熊本店　公式LINE
 {line_url}
 
-
-
 ※下記内容をご確認の上、友だち追加をお願いします。
-
 ※LINEをお持ちでない方は空メールをお送りくださいませ。
-
 ※2日以内にご返信がない場合は自動キャンセルさせていただきますのでご了承ください
 
-
-
 【当日の注意事項について】
-
  ・持病がある方に関しては施術によっては医師の同意書が必要になります。
-
 ・妊娠中の方の施術はお断りさせていただいております。
-
 ・未成年の方は親権者同伴以外の場合、施術不可となります。
-
 ・生理中でも施術は可能です。
-
 ・お支払いはクレジットカードのみとなります。(カード番号が必要になります)
-
 ・初回お試しは全店舗を通して、お一人様一回までとなっております。2回目のご利用の方は通常料金でのご案内となります。
 
-
-
 【キャンセルについて】
-
 ◆キャンセルはご予約日の前日18時までにLINEにてご連絡くださいませ。
-
 ◆無断キャンセルの場合は正規の施術代をご負担いただきます。また、次回よりご予約がお取りいただけなくなる場合がございます。
-
 ◆前日18時以降のキャンセルやご変更は直前キャンセル料2200円を銀行振り込みにてご請求させていただきます。
-
-
 
 お願いばかりで申し訳ございませんが、一部ルールをお守りいただけない方がいらっしゃいますので予めご了承くださいませ。
 
-
-
 当日お会いできるのを楽しみにしております。
-
 
 =============================
 ■{studio_name}
-住所: {studio_address or "〒000-0000 住所未設定"}
-TEL: {studio_tel or "未設定"}
-メールアドレス: {guest_email}
+住所:
+〒8600845
+熊本県熊本市中央区熊本市中央区上通町
+イーストンビル1階
+TEL: 09032432739
+URL: -
+メールアドレス: asmy-mail-aaaasbyqduo5exmvgvjersii24@look-back74.slack.com
 =============================
-
-================================================================================
-宛先: {guest_email}
-件名: 【{studio_name}】ご予約確認
-================================================================================
 """
     
     # ファイルに保存
@@ -362,6 +335,159 @@ TEL: {studio_tel or "未設定"}
     except Exception as e:
         logger.error(f"Failed to save email mock: {e}")
         return None
+
+
+# ==================== Slack通知 ====================
+
+def send_slack_notification(
+    status: str,  # "success" or "error"
+    reservation_id: int = None,
+    guest_name: str = "",
+    guest_email: str = "",
+    guest_phone: str = "",
+    studio_name: str = "",
+    reservation_date: str = "",
+    reservation_time: str = "",
+    program_name: str = "",
+    error_message: str = "",
+    error_code: str = ""
+):
+    """Slackに予約通知を送信
+    
+    Args:
+        status: "success" または "error"
+        reservation_id: 予約ID
+        guest_name: ゲスト名
+        guest_email: メールアドレス
+        guest_phone: 電話番号
+        studio_name: 店舗名
+        reservation_date: 予約日
+        reservation_time: 予約時間
+        program_name: 施術コース名
+        error_message: エラーメッセージ（エラー時）
+        error_code: エラーコード（エラー時）
+    """
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    
+    logger.info(f"Slack notification called: status={status}, reservation_id={reservation_id}, guest_name={guest_name}")
+    
+    if not webhook_url:
+        logger.warning("SLACK_WEBHOOK_URL is not set, skipping Slack notification")
+        return
+    
+    logger.info(f"SLACK_WEBHOOK_URL is set, sending notification to Slack")
+    
+    try:
+        if status == "success":
+            color = "good"  # 緑色
+            title = "✅ 予約成功"
+            fields = [
+                {
+                    "title": "予約ID",
+                    "value": str(reservation_id) if reservation_id else "N/A",
+                    "short": True
+                },
+                {
+                    "title": "お客様名",
+                    "value": guest_name or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "メールアドレス",
+                    "value": guest_email or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "電話番号",
+                    "value": guest_phone or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "店舗名",
+                    "value": studio_name or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "予約日時",
+                    "value": f"{reservation_date} {reservation_time}" if reservation_date and reservation_time else "N/A",
+                    "short": True
+                },
+                {
+                    "title": "施術コース",
+                    "value": program_name or "N/A",
+                    "short": False
+                }
+            ]
+        else:  # error
+            color = "danger"  # 赤色
+            title = "❌ 予約失敗"
+            fields = [
+                {
+                    "title": "エラーコード",
+                    "value": error_code or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "エラーメッセージ",
+                    "value": error_message or "N/A",
+                    "short": False
+                },
+                {
+                    "title": "お客様名",
+                    "value": guest_name or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "メールアドレス",
+                    "value": guest_email or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "電話番号",
+                    "value": guest_phone or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "店舗名",
+                    "value": studio_name or "N/A",
+                    "short": True
+                }
+            ]
+        
+        # テキスト形式のサマリーを作成（フォールバック用）
+        if status == "success":
+            text_summary = f"✅ 予約成功\n予約ID: {reservation_id or 'N/A'}\nお客様名: {guest_name or 'N/A'}\n店舗名: {studio_name or 'N/A'}\n予約日時: {reservation_date or 'N/A'} {reservation_time or 'N/A'}"
+        else:
+            text_summary = f"❌ 予約失敗\nエラーコード: {error_code or 'N/A'}\nエラーメッセージ: {error_message or 'N/A'}\nお客様名: {guest_name or 'N/A'}"
+        
+        payload = {
+            "text": text_summary,  # フォールバック用のテキスト
+            "attachments": [
+                {
+                    "color": color,
+                    "title": title,
+                    "fields": fields,
+                    "footer": "Happle Reservation System",
+                    "ts": int(datetime.now().timestamp())
+                }
+            ]
+        }
+        
+        logger.info(f"Sending Slack notification payload: {json.dumps(payload, ensure_ascii=False)}")
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            timeout=5
+        )
+        response.raise_for_status()
+        logger.info(f"Slack notification sent successfully (status: {status}, response_status: {response.status_code})")
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to send Slack notification: {e}, response: {getattr(e, 'response', None)}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response status: {e.response.status_code}, body: {e.response.text}")
+    except Exception as e:
+        logger.error(f"Unexpected error sending Slack notification: {e}", exc_info=True)
 
 
 # ==================== ヘルスチェック ====================
@@ -990,6 +1116,18 @@ def create_reservation():
         error_info = _parse_hacomono_error(e)
         logger.error(f"Failed to create member: {e}")
         logger.error(f"Member creation API response body: {e.response_body}")
+        
+        # Slack通知（エラー）
+        send_slack_notification(
+            status="error",
+            guest_name=data.get("guest_name", ""),
+            guest_email=data.get("guest_email", ""),
+            guest_phone=data.get("guest_phone", ""),
+            studio_name="",
+            error_message=error_info["user_message"],
+            error_code=error_info["error_code"]
+        )
+        
         return jsonify({
             "success": False,
             "error": "ゲスト情報の登録に失敗しました",
@@ -998,6 +1136,17 @@ def create_reservation():
             "detail": error_info["detail"]
         }), 400
     except ValueError as e:
+        # Slack通知（エラー）
+        send_slack_notification(
+            status="error",
+            guest_name=data.get("guest_name", ""),
+            guest_email=data.get("guest_email", ""),
+            guest_phone=data.get("guest_phone", ""),
+            studio_name="",
+            error_message=str(e),
+            error_code="MEMBER_CREATE_ERROR"
+        )
+        
         return jsonify({
             "success": False,
             "error": str(e),
@@ -1058,6 +1207,17 @@ def create_reservation():
                         space_no = str(available_seats[0])  # 最初の空き席を使用
                     else:
                         # 満席
+                        # Slack通知（エラー）
+                        send_slack_notification(
+                            status="error",
+                            guest_name=data.get("guest_name", ""),
+                            guest_email=data.get("guest_email", ""),
+                            guest_phone=data.get("guest_phone", ""),
+                            studio_name="",
+                            error_message="選択されたレッスンは満席です。別の時間帯を選択してください。",
+                            error_code="RSV_000008"
+                        )
+                        
                         return jsonify({
                             "success": False,
                             "error": "この時間帯は満席です",
@@ -1092,6 +1252,18 @@ def create_reservation():
     # スペースに有効なnoがない場合はエラー
     if not space_no or not space_has_valid_no:
         logger.error(f"Space {studio_room_space_id} does not have valid 'no' field in space_details")
+        
+        # Slack通知（エラー）
+        send_slack_notification(
+            status="error",
+            guest_name=data.get("guest_name", ""),
+            guest_email=data.get("guest_email", ""),
+            guest_phone=data.get("guest_phone", ""),
+            studio_name="",
+            error_message="スペースの席設定（no）が正しくありません。管理画面でスペースの席を正しく設定してください。",
+            error_code="SPACE_NO_MISSING"
+        )
+        
         return jsonify({
             "success": False,
             "error": "このレッスン枠は予約できません",
@@ -1119,6 +1291,18 @@ def create_reservation():
         error_info = _parse_hacomono_error(e)
         logger.error(f"Failed to create reservation: {e}")
         logger.error(f"API response body: {e.response_body}")
+        
+        # Slack通知（エラー）
+        send_slack_notification(
+            status="error",
+            guest_name=data.get("guest_name", ""),
+            guest_email=data.get("guest_email", ""),
+            guest_phone=data.get("guest_phone", ""),
+            studio_name="",
+            error_message=error_info["user_message"],
+            error_code=error_info["error_code"]
+        )
+        
         return jsonify({
             "success": False,
             "error": "予約の作成に失敗しました",
@@ -1202,6 +1386,19 @@ def create_reservation():
     
     # 認証用ハッシュを生成（フロントエンドに返す）
     verify_hash_value = generate_verification_hash(data["guest_email"], data["guest_phone"])
+    
+    # Slack通知（成功）
+    send_slack_notification(
+        status="success",
+        reservation_id=reservation_id,
+        guest_name=data.get("guest_name", ""),
+        guest_email=data.get("guest_email", ""),
+        guest_phone=data.get("guest_phone", ""),
+        studio_name=studio_name,
+        reservation_date=reservation_date,
+        reservation_time=reservation_time,
+        program_name=program_name
+    )
     
     return jsonify({
         "success": True,
@@ -1526,6 +1723,17 @@ def create_choice_reservation():
                     pass
             
             if not member_id:
+                # Slack通知（エラー）
+                send_slack_notification(
+                    status="error",
+                    guest_name=guest_name,
+                    guest_email=guest_email,
+                    guest_phone=guest_phone,
+                    studio_name="",
+                    error_message=error_info["user_message"],
+                    error_code=error_info["error_code"]
+                )
+                
                 return jsonify({
                     "error": "ゲスト情報の登録に失敗しました", 
                     "message": error_info["user_message"],
@@ -1622,6 +1830,18 @@ def create_choice_reservation():
             else:
                 # 空いているスタッフが見つからない場合はエラー
                 logger.error(f"No available instructors found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
+                
+                # Slack通知（エラー）
+                send_slack_notification(
+                    status="error",
+                    guest_name=guest_name,
+                    guest_email=guest_email,
+                    guest_phone=guest_phone,
+                    studio_name="",
+                    error_message="この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
+                    error_code="NO_AVAILABLE_INSTRUCTOR"
+                )
+                
                 return jsonify({
                     "error": "予約の作成に失敗しました",
                     "message": "この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
@@ -1629,6 +1849,18 @@ def create_choice_reservation():
                 }), 400
         except Exception as e:
             logger.warning(f"Failed to get available instructors: {e}")
+            
+            # Slack通知（エラー）
+            send_slack_notification(
+                status="error",
+                guest_name=guest_name,
+                guest_email=guest_email,
+                guest_phone=guest_phone,
+                studio_name="",
+                error_message="スタッフ情報の取得に失敗しました。",
+                error_code="INSTRUCTOR_FETCH_ERROR"
+            )
+            
             return jsonify({
                 "error": "予約の作成に失敗しました",
                 "message": "スタッフ情報の取得に失敗しました。",
@@ -1661,6 +1893,18 @@ def create_choice_reservation():
         logger.error(f"Failed to create choice reservation: {e}")
         logger.error(f"Choice reservation API response body: {e.response_body}")
         error_info = _parse_hacomono_error(e)
+        
+        # Slack通知（エラー）
+        send_slack_notification(
+            status="error",
+            guest_name=guest_name,
+            guest_email=guest_email,
+            guest_phone=guest_phone,
+            studio_name="",
+            error_message=error_info["user_message"],
+            error_code=error_info["error_code"]
+        )
+        
         return jsonify({
             "error": "予約の作成に失敗しました", 
             "message": error_info["user_message"],
@@ -1737,6 +1981,19 @@ def create_choice_reservation():
     
     # 認証用ハッシュを生成（フロントエンドに返す）
     verify_hash_value = generate_verification_hash(guest_email, guest_phone)
+    
+    # Slack通知（成功）
+    send_slack_notification(
+        status="success",
+        reservation_id=reservation_id,
+        guest_name=guest_name,
+        guest_email=guest_email,
+        guest_phone=guest_phone,
+        studio_name=studio_name,
+        reservation_date=reservation_date,
+        reservation_time=reservation_time,
+        program_name=program_name
+    )
     
     return jsonify({
         "success": True,

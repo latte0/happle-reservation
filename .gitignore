@@ -38,5 +38,12 @@ oauth_callback_server.py
 hacomono_token.json
 url*.txt
 
+# Terraform (contains sensitive credentials)
+happle-reservation/terraform/
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
 
 
