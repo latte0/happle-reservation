@@ -433,6 +433,11 @@ def send_slack_notification(
                     "short": False
                 },
                 {
+                    "title": "予約希望日時",
+                    "value": f"{reservation_date} {reservation_time}" if reservation_date and reservation_time else "N/A",
+                    "short": True
+                },
+                {
                     "title": "お客様名",
                     "value": guest_name or "N/A",
                     "short": True
@@ -458,7 +463,8 @@ def send_slack_notification(
         if status == "success":
             text_summary = f"✅ 予約成功\n予約ID: {reservation_id or 'N/A'}\nお客様名: {guest_name or 'N/A'}\n店舗名: {studio_name or 'N/A'}\n予約日時: {reservation_date or 'N/A'} {reservation_time or 'N/A'}"
         else:
-            text_summary = f"❌ 予約失敗\nエラーコード: {error_code or 'N/A'}\nエラーメッセージ: {error_message or 'N/A'}\nお客様名: {guest_name or 'N/A'}"
+            reservation_time_str = f"{reservation_date} {reservation_time}" if reservation_date and reservation_time else "N/A"
+            text_summary = f"❌ 予約失敗\nエラーコード: {error_code or 'N/A'}\nエラーメッセージ: {error_message or 'N/A'}\n予約希望日時: {reservation_time_str}\nお客様名: {guest_name or 'N/A'}"
         
         payload = {
             "text": text_summary,  # フォールバック用のテキスト
@@ -1627,6 +1633,31 @@ def create_choice_reservation():
     guest_phone = data["guest_phone"]
     guest_note = data.get("guest_note", "")
     
+    # 店舗名を取得（エラー通知用）
+    studio_name = ""
+    try:
+        # studio_room_idからstudio_idを取得
+        studio_room_response = client.get_studio_room(studio_room_id)
+        studio_room_data = studio_room_response.get("data", {}).get("studio_room", {})
+        studio_id = studio_room_data.get("studio_id")
+        
+        if studio_id:
+            # studio_idから店舗名を取得
+            studio_response = client.get_studio(studio_id)
+            studio_data = studio_response.get("data", {}).get("studio", {})
+            studio_name = studio_data.get("name", "")
+    except Exception as e:
+        logger.warning(f"Failed to get studio name: {e}")
+        # フォールバック: dataからstudio_idを取得
+        studio_id = data.get("studio_id")
+        if studio_id:
+            try:
+                studio_response = client.get_studio(studio_id)
+                studio_data = studio_response.get("data", {}).get("studio", {})
+                studio_name = studio_data.get("name", "")
+            except Exception:
+                pass
+    
     # 0. 予約日時が有効範囲内かチェック
     try:
         # "yyyy-MM-dd HH:mm:ss.fff" 形式をパース
@@ -1723,13 +1754,26 @@ def create_choice_reservation():
                     pass
             
             if not member_id:
+                # 予約時間をフォーマット
+                try:
+                    from zoneinfo import ZoneInfo
+                    jst = ZoneInfo("Asia/Tokyo")
+                    start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
+                    reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
+                    reservation_time = start_datetime.strftime("%H:%M")
+                except:
+                    reservation_date = ""
+                    reservation_time = ""
+                
                 # Slack通知（エラー）
                 send_slack_notification(
                     status="error",
                     guest_name=guest_name,
                     guest_email=guest_email,
                     guest_phone=guest_phone,
-                    studio_name="",
+                    studio_name=studio_name,
+                    reservation_date=reservation_date,
+                    reservation_time=reservation_time,
                     error_message=error_info["user_message"],
                     error_code=error_info["error_code"]
                 )
@@ -1831,16 +1875,33 @@ def create_choice_reservation():
                 # 空いているスタッフが見つからない場合はエラー
                 logger.error(f"No available instructors found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
                 
+                # 予約時間をフォーマット
+                try:
+                    reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
+                    reservation_time = start_datetime.strftime("%H:%M")
+                except:
+                    reservation_date = date_str
+                    reservation_time = start_at.split(" ")[1].split(".")[0] if " " in start_at else ""
+                
                 # Slack通知（エラー）
+                error_msg_with_time = f"この時間帯（{reservation_date} {reservation_time}）に対応可能なスタッフがいません。別の時間帯をお選びください。"
                 send_slack_notification(
                     status="error",
                     guest_name=guest_name,
                     guest_email=guest_email,
                     guest_phone=guest_phone,
-                    studio_name="",
-                    error_message="この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
+                    studio_name=studio_name,
+                    reservation_date=reservation_date,
+                    reservation_time=reservation_time,
+                    error_message=error_msg_with_time,
                     error_code="NO_AVAILABLE_INSTRUCTOR"
                 )
+                
+                return jsonify({
+                    "error": "予約の作成に失敗しました",
+                    "message": error_msg_with_time,
+                    "error_code": "NO_AVAILABLE_INSTRUCTOR"
+                }), 400
                 
                 return jsonify({
                     "error": "予約の作成に失敗しました",
@@ -1850,14 +1911,28 @@ def create_choice_reservation():
         except Exception as e:
             logger.warning(f"Failed to get available instructors: {e}")
             
+            # 予約時間をフォーマット
+            try:
+                from zoneinfo import ZoneInfo
+                jst = ZoneInfo("Asia/Tokyo")
+                start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
+                reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
+                reservation_time = start_datetime.strftime("%H:%M")
+            except:
+                reservation_date = ""
+                reservation_time = ""
+            
             # Slack通知（エラー）
+            error_msg_with_time = f"スタッフ情報の取得に失敗しました。（予約希望時間: {reservation_date} {reservation_time}）" if reservation_date and reservation_time else "スタッフ情報の取得に失敗しました。"
             send_slack_notification(
                 status="error",
                 guest_name=guest_name,
                 guest_email=guest_email,
                 guest_phone=guest_phone,
-                studio_name="",
-                error_message="スタッフ情報の取得に失敗しました。",
+                studio_name=studio_name,
+                reservation_date=reservation_date,
+                reservation_time=reservation_time,
+                error_message=error_msg_with_time,
                 error_code="INSTRUCTOR_FETCH_ERROR"
             )
             
@@ -1894,20 +1969,36 @@ def create_choice_reservation():
         logger.error(f"Choice reservation API response body: {e.response_body}")
         error_info = _parse_hacomono_error(e)
         
+        # 予約時間をフォーマット
+        try:
+            from zoneinfo import ZoneInfo
+            jst = ZoneInfo("Asia/Tokyo")
+            start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
+            reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
+            reservation_time = start_datetime.strftime("%H:%M")
+        except:
+            reservation_date = ""
+            reservation_time = ""
+        
+        # エラーメッセージに予約時間を追加
+        error_msg_with_time = f"{error_info['user_message']}（予約希望時間: {reservation_date} {reservation_time}）" if reservation_date and reservation_time else error_info["user_message"]
+        
         # Slack通知（エラー）
         send_slack_notification(
             status="error",
             guest_name=guest_name,
             guest_email=guest_email,
             guest_phone=guest_phone,
-            studio_name="",
-            error_message=error_info["user_message"],
+            studio_name=studio_name,
+            reservation_date=reservation_date,
+            reservation_time=reservation_time,
+            error_message=error_msg_with_time,
             error_code=error_info["error_code"]
         )
         
         return jsonify({
             "error": "予約の作成に失敗しました", 
-            "message": error_info["user_message"],
+            "message": error_msg_with_time,
             "error_code": error_info["error_code"],
             "detail": error_info.get("detail", str(e))
         }), 400
@@ -2170,9 +2261,42 @@ def get_choice_schedule():
             except Exception as e:
                 logger.warning(f"Failed to get fixed slot lessons: {e}")
         
-        # 自由枠の予約情報と固定枠のスタッフブロックを統合
+        # スタッフの予定ブロックを取得（休憩時間など）
+        instructor_schedule_blocks = []
+        if actual_studio_id:
+            try:
+                blocks_response = client.get_instructor_schedule_blocks(actual_studio_id, date)
+                blocks_data = blocks_response.get("data", {}).get("instructor_schedule_blocks", {})
+                if isinstance(blocks_data, dict):
+                    instructor_schedule_blocks = blocks_data.get("list", [])
+                elif isinstance(blocks_data, list):
+                    instructor_schedule_blocks = blocks_data
+                
+                logger.info(f"Found {len(instructor_schedule_blocks)} instructor schedule blocks for {date}")
+            except Exception as e:
+                logger.warning(f"Failed to get instructor schedule blocks: {e}")
+        
+        # スタッフの予定ブロックを予約形式に変換
+        instructor_block_reservations = []
+        for block in instructor_schedule_blocks:
+            instructor_id = block.get("instructor_id")
+            start_at_str = block.get("start_at")
+            end_at_str = block.get("end_at")
+            
+            if instructor_id and start_at_str and end_at_str:
+                instructor_block_reservations.append({
+                    "entity_id": instructor_id,
+                    "entity_type": "INSTRUCTOR",
+                    "start_at": start_at_str,
+                    "end_at": end_at_str,
+                    "reservation_type": "INSTRUCTOR_SCHEDULE_BLOCK",
+                    "block_reason": block.get("reason", "予定ブロック")
+                })
+        
+        # 自由枠の予約情報、固定枠のスタッフブロック、スタッフの予定ブロックを統合
         all_instructor_reservations = list(schedule.get("reservation_assign_instructor", []))
         all_instructor_reservations.extend(fixed_slot_reservations)
+        all_instructor_reservations.extend(instructor_block_reservations)
         
         # スタッフのスタジオ紐付け情報を取得（キャッシュ付き、リトライあり）
         instructor_studio_map = get_cached_instructor_studio_map(client)
@@ -2187,6 +2311,7 @@ def get_choice_schedule():
                 "shift_instructor": schedule.get("shift_instructor", []),
                 "reservation_assign_instructor": all_instructor_reservations,
                 "fixed_slot_lessons": fixed_slot_lessons,
+                "instructor_schedule_blocks": instructor_schedule_blocks,  # スタッフの予定ブロック
                 "fixed_slot_interval": {
                     "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
                     "after_minutes": FIXED_SLOT_AFTER_INTERVAL_MINUTES
@@ -2327,7 +2452,21 @@ def get_choice_schedule_range():
             except Exception as e:
                 logger.warning(f"Failed to get fixed slot lessons for range: {e}")
         
-        # 4. 結果を統合
+        # 4. スタッフの予定ブロックを各日付ごとに取得
+        instructor_schedule_blocks_by_date = {date: [] for date in dates}
+        if actual_studio_id:
+            for date in dates:
+                try:
+                    blocks_response = client.get_instructor_schedule_blocks(actual_studio_id, date)
+                    blocks_data = blocks_response.get("data", {}).get("instructor_schedule_blocks", {})
+                    if isinstance(blocks_data, dict):
+                        instructor_schedule_blocks_by_date[date] = blocks_data.get("list", [])
+                    elif isinstance(blocks_data, list):
+                        instructor_schedule_blocks_by_date[date] = blocks_data
+                except Exception as e:
+                    logger.warning(f"Failed to get instructor schedule blocks for {date}: {e}")
+        
+        # 5. 結果を統合
         result_schedules = {}
         for date in dates:
             schedule = schedules.get(date)
@@ -2335,6 +2474,25 @@ def get_choice_schedule_range():
                 # 予約情報に固定枠を統合
                 all_reservations = schedule.get("reservation_assign_instructor", [])
                 all_reservations.extend(fixed_slot_reservations_by_date.get(date, []))
+                
+                # スタッフの予定ブロックを予約形式に変換して追加
+                instructor_block_reservations = []
+                for block in instructor_schedule_blocks_by_date.get(date, []):
+                    instructor_id = block.get("instructor_id")
+                    start_at_str = block.get("start_at")
+                    end_at_str = block.get("end_at")
+                    
+                    if instructor_id and start_at_str and end_at_str:
+                        instructor_block_reservations.append({
+                            "entity_id": instructor_id,
+                            "entity_type": "INSTRUCTOR",
+                            "start_at": start_at_str,
+                            "end_at": end_at_str,
+                            "reservation_type": "INSTRUCTOR_SCHEDULE_BLOCK",
+                            "block_reason": block.get("reason", "予定ブロック")
+                        })
+                
+                all_reservations.extend(instructor_block_reservations)
                 
                 result_schedules[date] = {
                     "date": date,
@@ -2345,6 +2503,7 @@ def get_choice_schedule_range():
                     "shift_instructor": schedule.get("shift_instructor", []),
                     "reservation_assign_instructor": all_reservations,
                     "fixed_slot_lessons": fixed_slot_lessons_by_date.get(date, []),
+                    "instructor_schedule_blocks": instructor_schedule_blocks_by_date.get(date, []),  # スタッフの予定ブロック
                     "fixed_slot_interval": {
                         "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
                         "after_minutes": FIXED_SLOT_AFTER_INTERVAL_MINUTES

@@ -376,6 +376,30 @@ class HacomonoClient:
             params["query"] = json.dumps({"date": date})
         return self.get("/reservation/reservations/choice/schedule", params=params)
     
+    def get_instructor_schedule_blocks(self, studio_id: int, date: str) -> Dict[str, Any]:
+        """スタッフの予定ブロックを取得（休憩時間など）
+        
+        Args:
+            studio_id: 店舗ID
+            date: 日付（yyyy-MM-dd形式）
+        """
+        params = {
+            "query": json.dumps({
+                "studio_id": studio_id,
+                "date": date
+            })
+        }
+        # スタッフの予定ブロックAPIエンドポイント（存在する場合）
+        # 存在しない場合は空のレスポンスを返す
+        try:
+            return self.get("/master/instructor-schedule-blocks", params=params)
+        except HacomonoAPIError as e:
+            if e.status_code == 404:
+                # APIが存在しない場合は空のレスポンスを返す
+                logger.warning(f"Instructor schedule blocks API not found, returning empty response")
+                return {"data": {"instructor_schedule_blocks": {"list": []}}}
+            raise
+    
     def get_choice_reserve_context(self, context_data: Dict) -> Dict[str, Any]:
         """自由枠予約詳細コンテキストを取得
         
