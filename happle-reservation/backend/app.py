@@ -1409,6 +1409,64 @@ def create_reservation():
     # 認証用ハッシュを生成（フロントエンドに返す）
     verify_hash_value = generate_verification_hash(data["guest_email"], data["guest_phone"])
     
+    # スタッフ名を取得（成功通知用）
+    instructor_names = ""
+    try:
+        # レッスン情報からスタッフIDを取得
+        lesson_response = client.get_studio_lesson(studio_lesson_id)
+        lesson_data = lesson_response.get("data", {}).get("studio_lesson", {})
+        instructor_ids = lesson_data.get("instructor_ids", [])
+        
+        if instructor_ids:
+            logger.info(f"Attempting to get instructor names for fixed reservation success notification, IDs: {instructor_ids}")
+            # get_instructor_names関数は後で定義されているので、直接呼び出す
+            # 一時的にここで定義するか、関数を先に定義する必要がある
+            # とりあえず、ここで直接取得する
+            instructor_name_list = []
+            for instructor_id in instructor_ids:
+                try:
+                    instructor_response = client.get_instructors({"id": instructor_id})
+                    instructors_data = instructor_response.get("data", {}).get("instructors", {})
+                    if isinstance(instructors_data, dict):
+                        instructors_list = instructors_data.get("list", [])
+                    elif isinstance(instructors_data, list):
+                        instructors_list = instructors_data
+                    else:
+                        instructors_list = []
+                    
+                    if instructors_list:
+                        instructor = instructors_list[0]
+                        instructor_code = instructor.get("code", "")
+                        last_name = instructor.get("last_name", "")
+                        first_name = instructor.get("first_name", "")
+                        if not last_name:
+                            last_name = instructor.get("lastName", "") or instructor.get("family_name", "") or instructor.get("familyName", "")
+                        if not first_name:
+                            first_name = instructor.get("firstName", "") or instructor.get("given_name", "") or instructor.get("givenName", "")
+                        
+                        instructor_name = f"{last_name} {first_name}".strip()
+                        
+                        if instructor_code:
+                            display_name = instructor_code
+                            if instructor_name:
+                                display_name = f"{instructor_code} ({instructor_name})"
+                        elif instructor_name:
+                            display_name = instructor_name
+                        else:
+                            display_name = f"スタッフID: {instructor_id}"
+                        
+                        instructor_name_list.append(display_name)
+                    else:
+                        instructor_name_list.append(f"スタッフID: {instructor_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to get instructor name for ID {instructor_id}: {e}")
+                    instructor_name_list.append(f"スタッフID: {instructor_id}")
+            
+            instructor_names = ", ".join(instructor_name_list) if instructor_name_list else ""
+            logger.info(f"Retrieved instructor names for fixed reservation success notification: {instructor_names}")
+    except Exception as e:
+        logger.warning(f"Failed to get instructor names for fixed reservation: {e}")
+    
     # Slack通知（成功）
     send_slack_notification(
         status="success",
@@ -1419,7 +1477,8 @@ def create_reservation():
         studio_name=studio_name,
         reservation_date=reservation_date,
         reservation_time=reservation_time,
-        program_name=program_name
+        program_name=program_name,
+        instructor_names=instructor_names
     )
     
     return jsonify({
@@ -1674,26 +1733,32 @@ def create_choice_reservation():
             except Exception:
                 pass
     
-    # メニュー名を取得（エラー通知用）
+    # メニュー名と所要時間を取得（エラー通知用・予約時間計算用）
     program_name = ""
+    program_duration_minutes = 30  # デフォルト30分
     try:
         program_response = client.get_program(program_id)
         program_data = program_response.get("data", {}).get("program", {})
         program_name = program_data.get("name", "")
+        program_duration_minutes = program_data.get("service_minutes", 30)  # 所要時間（分）
     except Exception as e:
         logger.warning(f"Failed to get program name: {e}")
     
-    # スタッフ名を取得するヘルパー関数（後で使用）
+    # スタッフ名・コードを取得するヘルパー関数（後で使用）
     def get_instructor_names(instructor_ids_list):
-        """スタッフIDのリストからスタッフ名を取得"""
+        """スタッフIDのリストからスタッフ名またはコードを取得"""
         if not instructor_ids_list:
+            logger.warning("get_instructor_names called with empty instructor_ids_list")
             return ""
         try:
             instructor_names = []
             for instructor_id in instructor_ids_list:
                 try:
+                    logger.debug(f"Fetching instructor info for ID: {instructor_id}")
                     instructor_response = client.get_instructors({"id": instructor_id})
+                    
                     instructors_data = instructor_response.get("data", {}).get("instructors", {})
+                    
                     if isinstance(instructors_data, dict):
                         instructors_list = instructors_data.get("list", [])
                     elif isinstance(instructors_data, list):
@@ -1703,16 +1768,49 @@ def create_choice_reservation():
                     
                     if instructors_list:
                         instructor = instructors_list[0]
+                        
+                        # スタッフコードを優先的に取得
+                        instructor_code = instructor.get("code", "")
+                        
+                        # スタッフ名を取得
                         last_name = instructor.get("last_name", "")
                         first_name = instructor.get("first_name", "")
+                        # 他の可能性のあるフィールド名も確認
+                        if not last_name:
+                            last_name = instructor.get("lastName", "") or instructor.get("family_name", "") or instructor.get("familyName", "")
+                        if not first_name:
+                            first_name = instructor.get("firstName", "") or instructor.get("given_name", "") or instructor.get("givenName", "")
+                        
                         instructor_name = f"{last_name} {first_name}".strip()
-                        if instructor_name:
-                            instructor_names.append(instructor_name)
+                        
+                        # 表示用の文字列を構築
+                        if instructor_code:
+                            # コードがある場合はコードを優先
+                            display_name = instructor_code
+                            if instructor_name:
+                                display_name = f"{instructor_code} ({instructor_name})"
+                        elif instructor_name:
+                            # コードがなく名前がある場合は名前
+                            display_name = instructor_name
+                        else:
+                            # どちらもない場合はID
+                            display_name = f"スタッフID: {instructor_id}"
+                        
+                        instructor_names.append(display_name)
+                        logger.debug(f"Added instructor display: {display_name}")
+                    else:
+                        # スタッフが見つからない場合もID番号を表示
+                        instructor_names.append(f"スタッフID: {instructor_id}")
+                        logger.warning(f"No instructors found in response for ID {instructor_id}, using ID instead")
                 except Exception as e:
-                    logger.warning(f"Failed to get instructor name for ID {instructor_id}: {e}")
-            return ", ".join(instructor_names) if instructor_names else ""
+                    logger.error(f"Failed to get instructor name for ID {instructor_id}: {e}", exc_info=True)
+                    # エラー時もIDを表示
+                    instructor_names.append(f"スタッフID: {instructor_id}")
+            result = ", ".join(instructor_names) if instructor_names else ""
+            logger.info(f"get_instructor_names result: '{result}' for IDs {instructor_ids_list}")
+            return result
         except Exception as e:
-            logger.warning(f"Failed to get instructor names: {e}")
+            logger.error(f"Failed to get instructor names: {e}", exc_info=True)
             return ""
     
     # 0. 予約日時が有効範囲内かチェック
@@ -1879,23 +1977,41 @@ def create_choice_reservation():
             shift_instructors = schedule.get("shift_instructor", [])
             reserved_instructors = schedule.get("reservation_assign_instructor", [])
             
-            # 予約済みのスタッフIDを取得
+            # 予約済みのスタッフIDを取得（全スタッフの予約を確認）
+            # 予約希望時間: start_datetime から start_datetime + program_duration_minutes
+            reservation_end_datetime = start_datetime + timedelta(minutes=program_duration_minutes)
             reserved_instructor_ids = set()
+            
+            logger.info(f"Checking reservations for time slot: {start_datetime} to {reservation_end_datetime} (duration: {program_duration_minutes} minutes)")
+            
             for reserved in reserved_instructors:
                 try:
                     reserved_start_str = reserved.get("start_at", "")
                     reserved_end_str = reserved.get("end_at", "")
                     if not reserved_start_str or not reserved_end_str:
                         continue
+                    
                     # ISO8601形式の日時をパース（タイムゾーン情報を処理してJSTに統一）
                     reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
                     reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
+                    
+                    # スタッフIDを取得（instructor_idフィールドを優先、なければentity_idを確認）
+                    instructor_id = reserved.get("instructor_id") or reserved.get("entity_id")
+                    if not instructor_id:
+                        logger.warning(f"Reserved instructor entry has no instructor_id or entity_id: {reserved}")
+                        continue
+                    
                     # 時間が重なっているかチェック
-                    if start_datetime < reserved_end and start_datetime + timedelta(minutes=30) > reserved_start:
-                        reserved_instructor_ids.add(reserved.get("entity_id"))
+                    # 予約希望時間（start_datetime ～ reservation_end_datetime）と
+                    # 既存予約時間（reserved_start ～ reserved_end）が重なっているか
+                    if start_datetime < reserved_end and reservation_end_datetime > reserved_start:
+                        reserved_instructor_ids.add(instructor_id)
+                        logger.info(f"Instructor {instructor_id} is reserved from {reserved_start} to {reserved_end}, conflicts with requested time {start_datetime} to {reservation_end_datetime}")
                 except Exception as e:
-                    logger.warning(f"Failed to parse reserved instructor time: {e}")
+                    logger.warning(f"Failed to parse reserved instructor time: {e}, reserved data: {reserved}")
                     continue
+            
+            logger.info(f"Reserved instructor IDs for time slot: {reserved_instructor_ids}")
             
             # 空いているスタッフを抽出（スタジオ紐付けもチェック）
             available_instructors = []
@@ -2049,7 +2165,11 @@ def create_choice_reservation():
         # スタッフ名を取得（instructor_idsが確定している場合）
         instructor_names = ""
         if instructor_ids:
+            logger.info(f"Attempting to get instructor names for IDs: {instructor_ids}")
             instructor_names = get_instructor_names(instructor_ids)
+            logger.info(f"Retrieved instructor names: {instructor_names}")
+        else:
+            logger.warning(f"No instructor_ids available for error notification. reservation_data: {reservation_data}")
         
         # Slack通知（エラー）
         send_slack_notification(
@@ -2143,6 +2263,15 @@ def create_choice_reservation():
     # 認証用ハッシュを生成（フロントエンドに返す）
     verify_hash_value = generate_verification_hash(guest_email, guest_phone)
     
+    # スタッフ名を取得（成功通知用）
+    instructor_names = ""
+    if instructor_ids:
+        logger.info(f"Attempting to get instructor names for success notification, IDs: {instructor_ids}")
+        instructor_names = get_instructor_names(instructor_ids)
+        logger.info(f"Retrieved instructor names for success notification: {instructor_names}")
+    else:
+        logger.warning(f"No instructor_ids available for success notification. reservation_data: {reservation_data}")
+    
     # Slack通知（成功）
     send_slack_notification(
         status="success",
@@ -2153,7 +2282,8 @@ def create_choice_reservation():
         studio_name=studio_name,
         reservation_date=reservation_date,
         reservation_time=reservation_time,
-        program_name=program_name
+        program_name=program_name,
+        instructor_names=instructor_names
     )
     
     return jsonify({

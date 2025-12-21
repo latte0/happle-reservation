@@ -16,6 +16,11 @@ services:
       - HACOMONO_ACCESS_TOKEN=${HACOMONO_ACCESS_TOKEN}
       - HACOMONO_REFRESH_TOKEN=${HACOMONO_REFRESH_TOKEN}
       - CORS_ORIGINS=http://localhost:3002,http://localhost:3001,http://localhost:3000,https://happle-reservation-frontend.onrender.com
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - SLACK_CLIENT_ID=${SLACK_CLIENT_ID}
+      - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - SLACK_VERIFICATION_TOKEN=${SLACK_VERIFICATION_TOKEN}
     volumes:
       - ./backend:/app
     command: python app.py
@@ -24,6 +29,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:5021
     ports:
       - "3002:3002"
     environment:
