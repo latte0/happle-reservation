@@ -14,7 +14,7 @@ COPY . .
 
 # Set build-time environment variables
 ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:5021}
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:5000}
 
 # Build the application
 RUN npm run build

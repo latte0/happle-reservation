@@ -11,6 +11,8 @@ import hashlib
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -18,6 +20,8 @@ load_dotenv()
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
+import boto3
+from botocore.exceptions import ClientError
 
 from hacomono_client import (
     HacomonoClient,
@@ -205,14 +209,281 @@ def validate_reservation_datetime(reservation_datetime: datetime) -> tuple[bool,
     return True, ""
 
 
-# ==================== メール送信モック ====================
+# ==================== 店舗情報ヘルパー ====================
 
-# メール保存ディレクトリ
+def get_studio_attr(studio_data: dict, key: str) -> str:
+    """店舗のattrsから指定キーの値を取得"""
+    attrs = studio_data.get("attrs", [])
+    for attr in attrs:
+        if attr.get("key") == key:
+            return attr.get("value", "")
+    return ""
+
+
+def get_studio_contact_info(studio_data: dict, overrides: dict) -> dict:
+    """店舗連絡先情報を取得（パラメータ優先、なければhacomonoからフォールバック）
+    
+    Args:
+        studio_data: hacomonoから取得した店舗データ
+        overrides: URLパラメータから渡された上書き値
+    
+    Returns:
+        店舗連絡先情報のdict
+    """
+    zip1 = studio_data.get("zip_code1", "")
+    zip2 = studio_data.get("zip_code2", "")
+    
+    # hacomonoの住所フィールドを結合
+    hacomono_address = " ".join(filter(None, [
+        studio_data.get("prefecture", ""),
+        studio_data.get("address1", ""),
+        studio_data.get("address2", ""),
+        studio_data.get("address3", "")
+    ]))
+    
+    return {
+        "zip": overrides.get("studio_zip") or (f"{zip1}-{zip2}" if zip1 and zip2 else (zip1 or "")),
+        "address": overrides.get("studio_address") or hacomono_address,
+        "tel": overrides.get("studio_tel") or studio_data.get("tel", ""),
+        "url": overrides.get("studio_url") or get_studio_attr(studio_data, "studio_url"),
+        "email": overrides.get("studio_email") or get_studio_attr(studio_data, "studio_email"),
+        "line_url": overrides.get("line_url") or get_studio_attr(studio_data, "line_url")
+    }
+
+
+def _generate_studio_footer(studio_name: str, contact_info: dict = None, fallback_address: str = "", fallback_tel: str = "") -> str:
+    """メール末尾の店舗情報フッターを生成
+    
+    Args:
+        studio_name: 店舗名
+        contact_info: get_studio_contact_infoで取得した連絡先情報
+        fallback_address: フォールバック用住所（後方互換）
+        fallback_tel: フォールバック用電話番号（後方互換）
+    
+    Returns:
+        フォーマットされた店舗情報フッター
+    """
+    lines = ["=============================", f"■{studio_name}"]
+    
+    if contact_info:
+        # 新しい形式: contact_infoを使用
+        if contact_info.get("zip") or contact_info.get("address"):
+            zip_code = contact_info.get("zip", "")
+            address = contact_info.get("address", "")
+            if zip_code:
+                lines.append(f"住所: 〒{zip_code}")
+                if address:
+                    lines.append(address)
+            elif address:
+                lines.append(f"住所: {address}")
+        
+        if contact_info.get("tel"):
+            lines.append(f"TEL: {contact_info['tel']}")
+        
+        if contact_info.get("url"):
+            lines.append(f"URL: {contact_info['url']}")
+        
+        if contact_info.get("email"):
+            lines.append(f"メールアドレス: {contact_info['email']}")
+    else:
+        # 後方互換: 旧パラメータを使用
+        if fallback_address:
+            lines.append(f"住所: {fallback_address}")
+        if fallback_tel:
+            lines.append(f"TEL: {fallback_tel}")
+    
+    lines.append("=============================")
+    return "\n".join(lines)
+
+
+# ==================== SES設定 ====================
+
+def load_ses_config_from_terraform():
+    """terraformのtfstateからSES設定を読み込む
+    
+    環境変数が設定されていない場合のフォールバックとして使用
+    """
+    tfstate_path = Path(__file__).parent.parent / "terraform" / "terraform.tfstate"
+    
+    if not tfstate_path.exists():
+        logger.warning(f"terraform.tfstate not found at {tfstate_path}")
+        return None
+    
+    try:
+        with open(tfstate_path, "r") as f:
+            tfstate = json.load(f)
+        
+        outputs = tfstate.get("outputs", {})
+        
+        # SES SMTP認証情報を取得
+        access_key = outputs.get("ses_smtp_user_access_key", {}).get("value")
+        
+        # secret_keyはtfstateのresources内から取得
+        secret_key = None
+        smtp_password = None
+        for resource in tfstate.get("resources", []):
+            if resource.get("type") == "aws_iam_access_key" and resource.get("name") == "ses_user_key":
+                instances = resource.get("instances", [])
+                if instances:
+                    secret_key = instances[0].get("attributes", {}).get("secret")
+                    smtp_password = instances[0].get("attributes", {}).get("ses_smtp_password_v4")
+                break
+        
+        return {
+            "aws_access_key_id": access_key,
+            "aws_secret_access_key": secret_key,
+            "smtp_password": smtp_password,
+            "region": "ap-northeast-1",
+            "domain": "reserve-now.jp",
+            "mail_from_domain": "mail.reserve-now.jp"
+        }
+    except Exception as e:
+        logger.error(f"Failed to load SES config from terraform: {e}")
+        return None
+
+
+def get_ses_config():
+    """SES設定を取得（環境変数優先、なければterraformから読み込み）"""
+    # 環境変数から取得
+    aws_access_key = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("SES_ACCESS_KEY_ID")
+    aws_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("SES_SECRET_ACCESS_KEY")
+    ses_region = os.environ.get("SES_REGION", "ap-northeast-1")
+    ses_domain = os.environ.get("SES_DOMAIN", "reserve-now.jp")
+    ses_from_email = os.environ.get("SES_FROM_EMAIL", "noreply@reserve-now.jp")
+    
+    if aws_access_key and aws_secret_key:
+        return {
+            "aws_access_key_id": aws_access_key,
+            "aws_secret_access_key": aws_secret_key,
+            "region": ses_region,
+            "domain": ses_domain,
+            "from_email": ses_from_email
+        }
+    
+    # terraformから読み込み
+    tf_config = load_ses_config_from_terraform()
+    if tf_config:
+        tf_config["from_email"] = f"noreply@{tf_config['domain']}"
+        return tf_config
+    
+    return None
+
+
+# SESクライアント（遅延初期化）
+_ses_client = None
+
+
+def get_ses_client():
+    """SESクライアントを取得（シングルトン）"""
+    global _ses_client
+    
+    if _ses_client is not None:
+        return _ses_client
+    
+    config = get_ses_config()
+    if not config:
+        logger.warning("SES config not available, email sending will be disabled")
+        return None
+    
+    try:
+        _ses_client = boto3.client(
+            'ses',
+            region_name=config.get("region", "ap-northeast-1"),
+            aws_access_key_id=config.get("aws_access_key_id"),
+            aws_secret_access_key=config.get("aws_secret_access_key")
+        )
+        logger.info("SES client initialized successfully")
+        return _ses_client
+    except Exception as e:
+        logger.error(f"Failed to initialize SES client: {e}")
+        return None
+
+
+def send_email_via_ses(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    from_email: str = None
+) -> dict:
+    """SESを使用してメール送信
+    
+    Args:
+        to_email: 送信先メールアドレス
+        subject: 件名
+        body_text: 本文（テキスト）
+        from_email: 送信元メールアドレス（省略時は設定から取得）
+    
+    Returns:
+        dict: {"success": bool, "message_id": str or None, "error": str or None}
+    """
+    client = get_ses_client()
+    config = get_ses_config()
+    
+    if not client or not config:
+        return {
+            "success": False,
+            "message_id": None,
+            "error": "SES client not configured"
+        }
+    
+    sender = from_email or config.get("from_email", "noreply@reserve-now.jp")
+    
+    try:
+        response = client.send_email(
+            Source=sender,
+            Destination={
+                'ToAddresses': [to_email]
+            },
+            Message={
+                'Subject': {
+                    'Data': subject,
+                    'Charset': 'UTF-8'
+                },
+                'Body': {
+                    'Text': {
+                        'Data': body_text,
+                        'Charset': 'UTF-8'
+                    }
+                }
+            }
+        )
+        
+        message_id = response.get('MessageId')
+        logger.info(f"Email sent successfully via SES: message_id={message_id}, to={to_email}")
+        
+        return {
+            "success": True,
+            "message_id": message_id,
+            "error": None
+        }
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        error_message = e.response['Error']['Message']
+        logger.error(f"SES send_email failed: {error_code} - {error_message}")
+        
+        return {
+            "success": False,
+            "message_id": None,
+            "error": f"{error_code}: {error_message}"
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error sending email via SES: {e}")
+        
+        return {
+            "success": False,
+            "message_id": None,
+            "error": str(e)
+        }
+
+
+# ==================== メール送信 ====================
+
+# メール保存ディレクトリ（ログ用）
 EMAILS_DIR = Path(__file__).parent / "logs" / "emails"
 EMAILS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def send_reservation_email_mock(
+def send_reservation_email(
     reservation_id: int,
     member_id: int,
     guest_name: str,
@@ -226,10 +497,11 @@ def send_reservation_email_mock(
     reservation_time: str = "",
     duration_minutes: int = 0,
     price: int = 0,
-    line_url: str = "https://lin.ee/SK9pvTs",
-    base_url: str = ""
+    line_url: str = "",
+    base_url: str = "",
+    studio_contact_info: dict = None
 ):
-    """予約完了メールをファイルに保存（モック実装）
+    """予約完了メールを送信（SES使用）+ Slack通知
     
     Args:
         reservation_id: 予約ID
@@ -238,23 +510,51 @@ def send_reservation_email_mock(
         guest_email: メールアドレス
         guest_phone: 電話番号
         studio_name: 店舗名
-        studio_address: 店舗住所
-        studio_tel: 店舗電話番号
+        studio_address: 店舗住所（後方互換用、studio_contact_info優先）
+        studio_tel: 店舗電話番号（後方互換用、studio_contact_info優先）
         program_name: メニュー名
         reservation_date: 予約日
         reservation_time: 予約時間
         duration_minutes: 所要時間（分）
         price: 料金
-        line_url: LINE URL
+        line_url: LINE URL（空の場合はLINE関連セクションを除外）
         base_url: 予約確認用ベースURL
+        studio_contact_info: 店舗連絡先情報（get_studio_contact_infoで取得）
+    
+    Returns:
+        dict: メール送信結果 {"success": bool, "message_id": str, "error": str}
     """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     
     # 認証用ハッシュを生成
     verify_hash = generate_verification_hash(guest_email, guest_phone)
     
-    # 予約確認URL（member_id + ハッシュを含める）
-    detail_url = f"{base_url}/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}" if base_url else f"/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}"
+    # 予約確認URL（member_id + ハッシュを含める、LINE URLがあれば追加）
+    detail_url_base = f"{base_url}/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}" if base_url else f"/reservation-detail?reservation_id={reservation_id}&member_id={member_id}&verify={verify_hash}"
+    if line_url:
+        from urllib.parse import quote
+        detail_url = f"{detail_url_base}&line_url={quote(line_url, safe='')}"
+    else:
+        detail_url = detail_url_base
+    
+    # LINE URLがある場合のみLINE関連セクションを含める
+    if line_url:
+        line_section = f"""
+【重要】
+公式LINEにフルネームをお送りいただきますと、ご予約完了となります。
+
+▼公式LINE
+{line_url}
+
+※下記内容をご確認の上、友だち追加をお願いします。
+※LINEをお持ちでない方は空メールをお送りくださいませ。
+※2日以内にご返信がない場合は自動キャンセルさせていただきますのでご了承ください
+
+"""
+        cancel_line_note = "◆キャンセルはご予約日の前日18時までにLINEにてご連絡くださいませ。"
+    else:
+        line_section = ""
+        cancel_line_note = "◆キャンセルはご予約日の前日18時までにご連絡くださいませ。"
     
     email_content = f"""{guest_name}　様
 
@@ -283,19 +583,9 @@ def send_reservation_email_mock(
 
 ■予約確認URL
 {detail_url}
-
-【重要】
-公式LINEにフルネームをお送りいただきますと、ご予約完了となります。
-
-▼Asmy熊本店　公式LINE
-{line_url}
-
-※下記内容をご確認の上、友だち追加をお願いします。
-※LINEをお持ちでない方は空メールをお送りくださいませ。
-※2日以内にご返信がない場合は自動キャンセルさせていただきますのでご了承ください
-
+{line_section}
 【当日の注意事項について】
- ・持病がある方に関しては施術によっては医師の同意書が必要になります。
+・持病がある方に関しては施術によっては医師の同意書が必要になります。
 ・妊娠中の方の施術はお断りさせていただいております。
 ・未成年の方は親権者同伴以外の場合、施術不可となります。
 ・生理中でも施術は可能です。
@@ -303,7 +593,7 @@ def send_reservation_email_mock(
 ・初回お試しは全店舗を通して、お一人様一回までとなっております。2回目のご利用の方は通常料金でのご案内となります。
 
 【キャンセルについて】
-◆キャンセルはご予約日の前日18時までにLINEにてご連絡くださいませ。
+{cancel_line_note}
 ◆無断キャンセルの場合は正規の施術代をご負担いただきます。また、次回よりご予約がお取りいただけなくなる場合がございます。
 ◆前日18時以降のキャンセルやご変更は直前キャンセル料2200円を銀行振り込みにてご請求させていただきます。
 
@@ -311,30 +601,50 @@ def send_reservation_email_mock(
 
 当日お会いできるのを楽しみにしております。
 
-=============================
-■{studio_name}
-住所:
-〒8600845
-熊本県熊本市中央区熊本市中央区上通町
-イーストンビル1階
-TEL: 09032432739
-URL: -
-メールアドレス: asmy-mail-aaaasbyqduo5exmvgvjersii24@look-back74.slack.com
-=============================
+{_generate_studio_footer(studio_name, studio_contact_info, studio_address, studio_tel)}
 """
     
-    # ファイルに保存
+    # 1. ファイルに保存（ログ用）
     filename = f"{reservation_id}_{timestamp}.txt"
     filepath = EMAILS_DIR / filename
     
     try:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(email_content)
-        logger.info(f"Email mock saved to: {filepath}")
-        return str(filepath)
+        logger.info(f"Email content saved to: {filepath}")
     except Exception as e:
-        logger.error(f"Failed to save email mock: {e}")
-        return None
+        logger.error(f"Failed to save email content: {e}")
+    
+    # 2. SESでメール送信
+    subject = f"【予約確認】{studio_name} - {reservation_date} {reservation_time}"
+    email_result = send_email_via_ses(
+        to_email=guest_email,
+        subject=subject,
+        body_text=email_content
+    )
+    
+    # 3. Slackにメール内容と送信結果を通知
+    try:
+        send_email_log_to_slack(
+            reservation_id=reservation_id,
+            guest_email=guest_email,
+            guest_name=guest_name,
+            studio_name=studio_name,
+            email_content=email_content,
+            email_result=email_result,
+            reservation_date=reservation_date,
+            reservation_time=reservation_time
+        )
+    except Exception as e:
+        logger.error(f"Failed to send email log to Slack: {e}")
+    
+    return email_result
+
+
+# 後方互換性のためのエイリアス
+def send_reservation_email_mock(*args, **kwargs):
+    """後方互換性のためのエイリアス（実際のメール送信に転送）"""
+    return send_reservation_email(*args, **kwargs)
 
 
 # ==================== Slack通知 ====================
@@ -416,12 +726,7 @@ def send_slack_notification(
                 {
                     "title": "施術コース",
                     "value": program_name or "N/A",
-                    "short": True
-                },
-                {
-                    "title": "スタッフ",
-                    "value": instructor_names or "N/A",
-                    "short": True
+                    "short": False
                 }
             ]
         else:  # error
@@ -437,11 +742,6 @@ def send_slack_notification(
                     "title": "エラーメッセージ",
                     "value": error_message or "N/A",
                     "short": False
-                },
-                {
-                    "title": "予約希望日時",
-                    "value": f"{reservation_date} {reservation_time}" if reservation_date and reservation_time else "N/A",
-                    "short": True
                 },
                 {
                     "title": "お客様名",
@@ -462,25 +762,8 @@ def send_slack_notification(
                     "title": "店舗名",
                     "value": studio_name or "N/A",
                     "short": True
-                },
-                {
-                    "title": "施術コース",
-                    "value": program_name or "N/A",
-                    "short": True
-                },
-                {
-                    "title": "スタッフ",
-                    "value": instructor_names or "N/A",
-                    "short": True
                 }
             ]
-        
-        # テキスト形式のサマリーを作成（フォールバック用）
-        if status == "success":
-            text_summary = f"✅ 予約成功\n予約ID: {reservation_id or 'N/A'}\nお客様名: {guest_name or 'N/A'}\n店舗名: {studio_name or 'N/A'}\n予約日時: {reservation_date or 'N/A'} {reservation_time or 'N/A'}\n施術コース: {program_name or 'N/A'}\nスタッフ: {instructor_names or 'N/A'}"
-        else:
-            reservation_time_str = f"{reservation_date} {reservation_time}" if reservation_date and reservation_time else "N/A"
-            text_summary = f"❌ 予約失敗\nエラーコード: {error_code or 'N/A'}\nエラーメッセージ: {error_message or 'N/A'}\n予約希望日時: {reservation_time_str}\n店舗名: {studio_name or 'N/A'}\n施術コース: {program_name or 'N/A'}\nスタッフ: {instructor_names or 'N/A'}\nお客様名: {guest_name or 'N/A'}"
         
         payload = {
             "text": text_summary,  # フォールバック用のテキスト
@@ -510,6 +793,109 @@ def send_slack_notification(
             logger.error(f"Response status: {e.response.status_code}, body: {e.response.text}")
     except Exception as e:
         logger.error(f"Unexpected error sending Slack notification: {e}", exc_info=True)
+
+
+def send_email_log_to_slack(
+    reservation_id: int,
+    guest_email: str,
+    guest_name: str,
+    studio_name: str,
+    email_content: str,
+    email_result: dict,
+    reservation_date: str = "",
+    reservation_time: str = ""
+):
+    """メール送信結果とメール内容をSlackに通知
+    
+    Args:
+        reservation_id: 予約ID
+        guest_email: 送信先メールアドレス
+        guest_name: ゲスト名
+        studio_name: 店舗名
+        email_content: メール本文
+        email_result: send_email_via_sesの戻り値 {"success": bool, "message_id": str, "error": str}
+        reservation_date: 予約日
+        reservation_time: 予約時間
+    """
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    
+    if not webhook_url:
+        logger.warning("SLACK_WEBHOOK_URL is not set, skipping email log notification")
+        return
+    
+    try:
+        if email_result.get("success"):
+            color = "#36a64f"  # 緑色
+            status_emoji = "✅"
+            status_text = "送信成功"
+            message_id_text = f"Message ID: `{email_result.get('message_id')}`"
+        else:
+            color = "#ff0000"  # 赤色
+            status_emoji = "❌"
+            status_text = "送信失敗"
+            message_id_text = f"エラー: {email_result.get('error', '不明なエラー')}"
+        
+        # メール内容を適度な長さに切り詰め（Slackの制限対策）
+        email_preview = email_content[:2000] + "..." if len(email_content) > 2000 else email_content
+        
+        payload = {
+            "text": f"{status_emoji} 予約確認メール {status_text}",
+            "attachments": [
+                {
+                    "color": color,
+                    "title": f"📧 予約確認メール {status_text}",
+                    "fields": [
+                        {
+                            "title": "予約ID",
+                            "value": str(reservation_id),
+                            "short": True
+                        },
+                        {
+                            "title": "送信先",
+                            "value": guest_email,
+                            "short": True
+                        },
+                        {
+                            "title": "お客様名",
+                            "value": guest_name,
+                            "short": True
+                        },
+                        {
+                            "title": "店舗名",
+                            "value": studio_name,
+                            "short": True
+                        },
+                        {
+                            "title": "予約日時",
+                            "value": f"{reservation_date} {reservation_time}" if reservation_date else "N/A",
+                            "short": True
+                        },
+                        {
+                            "title": "送信結果",
+                            "value": message_id_text,
+                            "short": False
+                        }
+                    ],
+                    "footer": "Happle Reservation - Email Service",
+                    "ts": int(datetime.now().timestamp())
+                },
+                {
+                    "color": "#0066cc",
+                    "title": "📝 メール内容",
+                    "text": f"```\n{email_preview}\n```",
+                    "mrkdwn_in": ["text"]
+                }
+            ]
+        }
+        
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info(f"Email log notification sent to Slack for reservation {reservation_id}")
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to send email log to Slack: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error sending email log to Slack: {e}")
 
 
 # ==================== ヘルスチェック ====================
@@ -1363,6 +1749,7 @@ def create_reservation():
         studio_name = ""
         studio_address = ""
         studio_tel = ""
+        studio_data = {}
         try:
             studio_response = client.get_studio(studio_id)
             studio_data = studio_response.get("data", {}).get("studio", {})
@@ -1371,6 +1758,17 @@ def create_reservation():
             studio_tel = studio_data.get("tel", "")
         except:
             pass
+        
+        # 店舗連絡先情報を取得（パラメータ優先、なければhacomonoからフォールバック）
+        contact_overrides = {
+            "studio_zip": data.get("studio_zip"),
+            "studio_address": data.get("studio_address"),
+            "studio_tel": data.get("studio_tel"),
+            "studio_url": data.get("studio_url"),
+            "studio_email": data.get("studio_email"),
+            "line_url": data.get("line_url")
+        }
+        studio_contact_info = get_studio_contact_info(studio_data, contact_overrides)
         
         # プログラム情報を取得
         program_id = lesson_data.get("program_id")
@@ -1387,6 +1785,7 @@ def create_reservation():
         
         # メール送信モック
         base_url = request.headers.get("Origin", "")
+        line_url = studio_contact_info.get("line_url", "")
         send_reservation_email_mock(
             reservation_id=reservation_id,
             member_id=member_id,
@@ -1401,7 +1800,9 @@ def create_reservation():
             reservation_time=reservation_time,
             duration_minutes=duration_minutes,
             price=price,
-            base_url=base_url
+            line_url=line_url,
+            base_url=base_url,
+            studio_contact_info=studio_contact_info
         )
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
@@ -1409,63 +1810,8 @@ def create_reservation():
     # 認証用ハッシュを生成（フロントエンドに返す）
     verify_hash_value = generate_verification_hash(data["guest_email"], data["guest_phone"])
     
-    # スタッフ名を取得（成功通知用）
-    instructor_names = ""
-    try:
-        # レッスン情報からスタッフIDを取得
-        lesson_response = client.get_studio_lesson(studio_lesson_id)
-        lesson_data = lesson_response.get("data", {}).get("studio_lesson", {})
-        instructor_ids = lesson_data.get("instructor_ids", [])
-        
-        if instructor_ids:
-            logger.info(f"Attempting to get instructor names for fixed reservation success notification, IDs: {instructor_ids}")
-            # get_instructor_names関数は後で定義されているので、直接呼び出す
-            # 一時的にここで定義するか、関数を先に定義する必要がある
-            # とりあえず、ここで直接取得する
-            instructor_name_list = []
-            for instructor_id in instructor_ids:
-                try:
-                    instructor_response = client.get_instructors({"id": instructor_id})
-                    instructors_data = instructor_response.get("data", {}).get("instructors", {})
-                    if isinstance(instructors_data, dict):
-                        instructors_list = instructors_data.get("list", [])
-                    elif isinstance(instructors_data, list):
-                        instructors_list = instructors_data
-                    else:
-                        instructors_list = []
-                    
-                    if instructors_list:
-                        instructor = instructors_list[0]
-                        instructor_code = instructor.get("code", "")
-                        last_name = instructor.get("last_name", "")
-                        first_name = instructor.get("first_name", "")
-                        if not last_name:
-                            last_name = instructor.get("lastName", "") or instructor.get("family_name", "") or instructor.get("familyName", "")
-                        if not first_name:
-                            first_name = instructor.get("firstName", "") or instructor.get("given_name", "") or instructor.get("givenName", "")
-                        
-                        instructor_name = f"{last_name} {first_name}".strip()
-                        
-                        if instructor_code:
-                            display_name = instructor_code
-                            if instructor_name:
-                                display_name = f"{instructor_code} ({instructor_name})"
-                        elif instructor_name:
-                            display_name = instructor_name
-                        else:
-                            display_name = f"スタッフID: {instructor_id}"
-                        
-                        instructor_name_list.append(display_name)
-                    else:
-                        instructor_name_list.append(f"スタッフID: {instructor_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to get instructor name for ID {instructor_id}: {e}")
-                    instructor_name_list.append(f"スタッフID: {instructor_id}")
-            
-            instructor_names = ", ".join(instructor_name_list) if instructor_name_list else ""
-            logger.info(f"Retrieved instructor names for fixed reservation success notification: {instructor_names}")
-    except Exception as e:
-        logger.warning(f"Failed to get instructor names for fixed reservation: {e}")
+    # 店舗連絡先情報からLINE URLを取得（レスポンスに含める）
+    line_url = studio_contact_info.get("line_url", "") if 'studio_contact_info' in locals() else data.get("line_url", "")
     
     # Slack通知（成功）
     send_slack_notification(
@@ -1477,8 +1823,7 @@ def create_reservation():
         studio_name=studio_name,
         reservation_date=reservation_date,
         reservation_time=reservation_time,
-        program_name=program_name,
-        instructor_names=instructor_names
+        program_name=program_name
     )
     
     return jsonify({
@@ -1491,6 +1836,7 @@ def create_reservation():
             "created_at": reservation.get("created_at")
         },
         "verify": verify_hash_value,
+        "line_url": line_url,
         "message": "予約が完了しました"
     }), 201
 
@@ -1708,111 +2054,6 @@ def create_choice_reservation():
     guest_phone = data["guest_phone"]
     guest_note = data.get("guest_note", "")
     
-    # 店舗名を取得（エラー通知用）
-    studio_name = ""
-    try:
-        # studio_room_idからstudio_idを取得
-        studio_room_response = client.get_studio_room(studio_room_id)
-        studio_room_data = studio_room_response.get("data", {}).get("studio_room", {})
-        studio_id = studio_room_data.get("studio_id")
-        
-        if studio_id:
-            # studio_idから店舗名を取得
-            studio_response = client.get_studio(studio_id)
-            studio_data = studio_response.get("data", {}).get("studio", {})
-            studio_name = studio_data.get("name", "")
-    except Exception as e:
-        logger.warning(f"Failed to get studio name: {e}")
-        # フォールバック: dataからstudio_idを取得
-        studio_id = data.get("studio_id")
-        if studio_id:
-            try:
-                studio_response = client.get_studio(studio_id)
-                studio_data = studio_response.get("data", {}).get("studio", {})
-                studio_name = studio_data.get("name", "")
-            except Exception:
-                pass
-    
-    # メニュー名と所要時間を取得（エラー通知用・予約時間計算用）
-    program_name = ""
-    program_duration_minutes = 30  # デフォルト30分
-    try:
-        program_response = client.get_program(program_id)
-        program_data = program_response.get("data", {}).get("program", {})
-        program_name = program_data.get("name", "")
-        program_duration_minutes = program_data.get("service_minutes", 30)  # 所要時間（分）
-    except Exception as e:
-        logger.warning(f"Failed to get program name: {e}")
-    
-    # スタッフ名・コードを取得するヘルパー関数（後で使用）
-    def get_instructor_names(instructor_ids_list):
-        """スタッフIDのリストからスタッフ名またはコードを取得"""
-        if not instructor_ids_list:
-            logger.warning("get_instructor_names called with empty instructor_ids_list")
-            return ""
-        try:
-            instructor_names = []
-            for instructor_id in instructor_ids_list:
-                try:
-                    logger.debug(f"Fetching instructor info for ID: {instructor_id}")
-                    instructor_response = client.get_instructors({"id": instructor_id})
-                    
-                    instructors_data = instructor_response.get("data", {}).get("instructors", {})
-                    
-                    if isinstance(instructors_data, dict):
-                        instructors_list = instructors_data.get("list", [])
-                    elif isinstance(instructors_data, list):
-                        instructors_list = instructors_data
-                    else:
-                        instructors_list = []
-                    
-                    if instructors_list:
-                        instructor = instructors_list[0]
-                        
-                        # スタッフコードを優先的に取得
-                        instructor_code = instructor.get("code", "")
-                        
-                        # スタッフ名を取得
-                        last_name = instructor.get("last_name", "")
-                        first_name = instructor.get("first_name", "")
-                        # 他の可能性のあるフィールド名も確認
-                        if not last_name:
-                            last_name = instructor.get("lastName", "") or instructor.get("family_name", "") or instructor.get("familyName", "")
-                        if not first_name:
-                            first_name = instructor.get("firstName", "") or instructor.get("given_name", "") or instructor.get("givenName", "")
-                        
-                        instructor_name = f"{last_name} {first_name}".strip()
-                        
-                        # 表示用の文字列を構築
-                        if instructor_code:
-                            # コードがある場合はコードを優先
-                            display_name = instructor_code
-                            if instructor_name:
-                                display_name = f"{instructor_code} ({instructor_name})"
-                        elif instructor_name:
-                            # コードがなく名前がある場合は名前
-                            display_name = instructor_name
-                        else:
-                            # どちらもない場合はID
-                            display_name = f"スタッフID: {instructor_id}"
-                        
-                        instructor_names.append(display_name)
-                        logger.debug(f"Added instructor display: {display_name}")
-                    else:
-                        # スタッフが見つからない場合もID番号を表示
-                        instructor_names.append(f"スタッフID: {instructor_id}")
-                        logger.warning(f"No instructors found in response for ID {instructor_id}, using ID instead")
-                except Exception as e:
-                    logger.error(f"Failed to get instructor name for ID {instructor_id}: {e}", exc_info=True)
-                    # エラー時もIDを表示
-                    instructor_names.append(f"スタッフID: {instructor_id}")
-            result = ", ".join(instructor_names) if instructor_names else ""
-            logger.info(f"get_instructor_names result: '{result}' for IDs {instructor_ids_list}")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to get instructor names: {e}", exc_info=True)
-            return ""
-    
     # 0. 予約日時が有効範囲内かチェック
     try:
         # "yyyy-MM-dd HH:mm:ss.fff" 形式をパース
@@ -1909,28 +2150,13 @@ def create_choice_reservation():
                     pass
             
             if not member_id:
-                # 予約時間をフォーマット
-                try:
-                    from zoneinfo import ZoneInfo
-                    jst = ZoneInfo("Asia/Tokyo")
-                    start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
-                    reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
-                    reservation_time = start_datetime.strftime("%H:%M")
-                except:
-                    reservation_date = ""
-                    reservation_time = ""
-                
                 # Slack通知（エラー）
                 send_slack_notification(
                     status="error",
                     guest_name=guest_name,
                     guest_email=guest_email,
                     guest_phone=guest_phone,
-                    studio_name=studio_name,
-                    reservation_date=reservation_date,
-                    reservation_time=reservation_time,
-                    program_name=program_name,
-                    instructor_names="",  # メンバー作成時点ではスタッフ未確定
+                    studio_name="",
                     error_message=error_info["user_message"],
                     error_code=error_info["error_code"]
                 )
@@ -1977,41 +2203,23 @@ def create_choice_reservation():
             shift_instructors = schedule.get("shift_instructor", [])
             reserved_instructors = schedule.get("reservation_assign_instructor", [])
             
-            # 予約済みのスタッフIDを取得（全スタッフの予約を確認）
-            # 予約希望時間: start_datetime から start_datetime + program_duration_minutes
-            reservation_end_datetime = start_datetime + timedelta(minutes=program_duration_minutes)
+            # 予約済みのスタッフIDを取得
             reserved_instructor_ids = set()
-            
-            logger.info(f"Checking reservations for time slot: {start_datetime} to {reservation_end_datetime} (duration: {program_duration_minutes} minutes)")
-            
             for reserved in reserved_instructors:
                 try:
                     reserved_start_str = reserved.get("start_at", "")
                     reserved_end_str = reserved.get("end_at", "")
                     if not reserved_start_str or not reserved_end_str:
                         continue
-                    
                     # ISO8601形式の日時をパース（タイムゾーン情報を処理してJSTに統一）
                     reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
                     reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
-                    
-                    # スタッフIDを取得（instructor_idフィールドを優先、なければentity_idを確認）
-                    instructor_id = reserved.get("instructor_id") or reserved.get("entity_id")
-                    if not instructor_id:
-                        logger.warning(f"Reserved instructor entry has no instructor_id or entity_id: {reserved}")
-                        continue
-                    
                     # 時間が重なっているかチェック
-                    # 予約希望時間（start_datetime ～ reservation_end_datetime）と
-                    # 既存予約時間（reserved_start ～ reserved_end）が重なっているか
-                    if start_datetime < reserved_end and reservation_end_datetime > reserved_start:
-                        reserved_instructor_ids.add(instructor_id)
-                        logger.info(f"Instructor {instructor_id} is reserved from {reserved_start} to {reserved_end}, conflicts with requested time {start_datetime} to {reservation_end_datetime}")
+                    if start_datetime < reserved_end and start_datetime + timedelta(minutes=30) > reserved_start:
+                        reserved_instructor_ids.add(reserved.get("entity_id"))
                 except Exception as e:
-                    logger.warning(f"Failed to parse reserved instructor time: {e}, reserved data: {reserved}")
+                    logger.warning(f"Failed to parse reserved instructor time: {e}")
                     continue
-            
-            logger.info(f"Reserved instructor IDs for time slot: {reserved_instructor_ids}")
             
             # 空いているスタッフを抽出（スタジオ紐付けもチェック）
             available_instructors = []
@@ -2050,35 +2258,16 @@ def create_choice_reservation():
                 # 空いているスタッフが見つからない場合はエラー
                 logger.error(f"No available instructors found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
                 
-                # 予約時間をフォーマット
-                try:
-                    reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
-                    reservation_time = start_datetime.strftime("%H:%M")
-                except:
-                    reservation_date = date_str
-                    reservation_time = start_at.split(" ")[1].split(".")[0] if " " in start_at else ""
-                
                 # Slack通知（エラー）
-                error_msg_with_time = f"この時間帯（{reservation_date} {reservation_time}）に対応可能なスタッフがいません。別の時間帯をお選びください。"
                 send_slack_notification(
                     status="error",
                     guest_name=guest_name,
                     guest_email=guest_email,
                     guest_phone=guest_phone,
-                    studio_name=studio_name,
-                    reservation_date=reservation_date,
-                    reservation_time=reservation_time,
-                    program_name=program_name,
-                    instructor_names="",  # スタッフが見つからないため空
-                    error_message=error_msg_with_time,
+                    studio_name="",
+                    error_message="この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
                     error_code="NO_AVAILABLE_INSTRUCTOR"
                 )
-                
-                return jsonify({
-                    "error": "予約の作成に失敗しました",
-                    "message": error_msg_with_time,
-                    "error_code": "NO_AVAILABLE_INSTRUCTOR"
-                }), 400
                 
                 return jsonify({
                     "error": "予約の作成に失敗しました",
@@ -2088,30 +2277,14 @@ def create_choice_reservation():
         except Exception as e:
             logger.warning(f"Failed to get available instructors: {e}")
             
-            # 予約時間をフォーマット
-            try:
-                from zoneinfo import ZoneInfo
-                jst = ZoneInfo("Asia/Tokyo")
-                start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
-                reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
-                reservation_time = start_datetime.strftime("%H:%M")
-            except:
-                reservation_date = ""
-                reservation_time = ""
-            
             # Slack通知（エラー）
-            error_msg_with_time = f"スタッフ情報の取得に失敗しました。（予約希望時間: {reservation_date} {reservation_time}）" if reservation_date and reservation_time else "スタッフ情報の取得に失敗しました。"
             send_slack_notification(
                 status="error",
                 guest_name=guest_name,
                 guest_email=guest_email,
                 guest_phone=guest_phone,
-                studio_name=studio_name,
-                reservation_date=reservation_date,
-                reservation_time=reservation_time,
-                program_name=program_name,
-                instructor_names="",  # スタッフ情報取得失敗のため空
-                error_message=error_msg_with_time,
+                studio_name="",
+                error_message="スタッフ情報の取得に失敗しました。",
                 error_code="INSTRUCTOR_FETCH_ERROR"
             )
             
@@ -2148,47 +2321,20 @@ def create_choice_reservation():
         logger.error(f"Choice reservation API response body: {e.response_body}")
         error_info = _parse_hacomono_error(e)
         
-        # 予約時間をフォーマット
-        try:
-            from zoneinfo import ZoneInfo
-            jst = ZoneInfo("Asia/Tokyo")
-            start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
-            reservation_date = start_datetime.strftime("%Y-%m-%d(%a)")
-            reservation_time = start_datetime.strftime("%H:%M")
-        except:
-            reservation_date = ""
-            reservation_time = ""
-        
-        # エラーメッセージに予約時間を追加
-        error_msg_with_time = f"{error_info['user_message']}（予約希望時間: {reservation_date} {reservation_time}）" if reservation_date and reservation_time else error_info["user_message"]
-        
-        # スタッフ名を取得（instructor_idsが確定している場合）
-        instructor_names = ""
-        if instructor_ids:
-            logger.info(f"Attempting to get instructor names for IDs: {instructor_ids}")
-            instructor_names = get_instructor_names(instructor_ids)
-            logger.info(f"Retrieved instructor names: {instructor_names}")
-        else:
-            logger.warning(f"No instructor_ids available for error notification. reservation_data: {reservation_data}")
-        
         # Slack通知（エラー）
         send_slack_notification(
             status="error",
             guest_name=guest_name,
             guest_email=guest_email,
             guest_phone=guest_phone,
-            studio_name=studio_name,
-            reservation_date=reservation_date,
-            reservation_time=reservation_time,
-            program_name=program_name,
-            instructor_names=instructor_names,
-            error_message=error_msg_with_time,
+            studio_name="",
+            error_message=error_info["user_message"],
             error_code=error_info["error_code"]
         )
         
         return jsonify({
             "error": "予約の作成に失敗しました", 
-            "message": error_msg_with_time,
+            "message": error_info["user_message"],
             "error_code": error_info["error_code"],
             "detail": error_info.get("detail", str(e))
         }), 400
@@ -2219,6 +2365,7 @@ def create_choice_reservation():
         studio_name = ""
         studio_address = ""
         studio_tel = ""
+        studio_data = {}
         try:
             studio_response = client.get_studio(studio_id)
             studio_data = studio_response.get("data", {}).get("studio", {})
@@ -2227,6 +2374,17 @@ def create_choice_reservation():
             studio_tel = studio_data.get("tel", "")
         except:
             pass
+        
+        # 店舗連絡先情報を取得（パラメータ優先、なければhacomonoからフォールバック）
+        contact_overrides = {
+            "studio_zip": data.get("studio_zip"),
+            "studio_address": data.get("studio_address"),
+            "studio_tel": data.get("studio_tel"),
+            "studio_url": data.get("studio_url"),
+            "studio_email": data.get("studio_email"),
+            "line_url": data.get("line_url")
+        }
+        studio_contact_info = get_studio_contact_info(studio_data, contact_overrides)
         
         # プログラム情報を取得
         program_name = ""
@@ -2241,6 +2399,7 @@ def create_choice_reservation():
         
         # メール送信モック
         base_url = request.headers.get("Origin", "")
+        line_url = studio_contact_info.get("line_url", "")
         send_reservation_email_mock(
             reservation_id=reservation_id,
             member_id=member_id,
@@ -2255,7 +2414,9 @@ def create_choice_reservation():
             reservation_time=reservation_time,
             duration_minutes=duration_minutes,
             price=price,
-            base_url=base_url
+            line_url=line_url,
+            base_url=base_url,
+            studio_contact_info=studio_contact_info
         )
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
@@ -2263,14 +2424,8 @@ def create_choice_reservation():
     # 認証用ハッシュを生成（フロントエンドに返す）
     verify_hash_value = generate_verification_hash(guest_email, guest_phone)
     
-    # スタッフ名を取得（成功通知用）
-    instructor_names = ""
-    if instructor_ids:
-        logger.info(f"Attempting to get instructor names for success notification, IDs: {instructor_ids}")
-        instructor_names = get_instructor_names(instructor_ids)
-        logger.info(f"Retrieved instructor names for success notification: {instructor_names}")
-    else:
-        logger.warning(f"No instructor_ids available for success notification. reservation_data: {reservation_data}")
+    # 店舗連絡先情報からLINE URLを取得（レスポンスに含める）
+    line_url = studio_contact_info.get("line_url", "") if 'studio_contact_info' in locals() else data.get("line_url", "")
     
     # Slack通知（成功）
     send_slack_notification(
@@ -2282,8 +2437,7 @@ def create_choice_reservation():
         studio_name=studio_name,
         reservation_date=reservation_date,
         reservation_time=reservation_time,
-        program_name=program_name,
-        instructor_names=instructor_names
+        program_name=program_name
     )
     
     return jsonify({
@@ -2299,6 +2453,7 @@ def create_choice_reservation():
             "created_at": reservation.get("created_at")
         },
         "verify": verify_hash_value,
+        "line_url": line_url,
         "message": "予約が完了しました"
     }), 201
 
@@ -2461,42 +2616,9 @@ def get_choice_schedule():
             except Exception as e:
                 logger.warning(f"Failed to get fixed slot lessons: {e}")
         
-        # スタッフの予定ブロックを取得（休憩時間など）
-        instructor_schedule_blocks = []
-        if actual_studio_id:
-            try:
-                blocks_response = client.get_instructor_schedule_blocks(actual_studio_id, date)
-                blocks_data = blocks_response.get("data", {}).get("instructor_schedule_blocks", {})
-                if isinstance(blocks_data, dict):
-                    instructor_schedule_blocks = blocks_data.get("list", [])
-                elif isinstance(blocks_data, list):
-                    instructor_schedule_blocks = blocks_data
-                
-                logger.info(f"Found {len(instructor_schedule_blocks)} instructor schedule blocks for {date}")
-            except Exception as e:
-                logger.warning(f"Failed to get instructor schedule blocks: {e}")
-        
-        # スタッフの予定ブロックを予約形式に変換
-        instructor_block_reservations = []
-        for block in instructor_schedule_blocks:
-            instructor_id = block.get("instructor_id")
-            start_at_str = block.get("start_at")
-            end_at_str = block.get("end_at")
-            
-            if instructor_id and start_at_str and end_at_str:
-                instructor_block_reservations.append({
-                    "entity_id": instructor_id,
-                    "entity_type": "INSTRUCTOR",
-                    "start_at": start_at_str,
-                    "end_at": end_at_str,
-                    "reservation_type": "INSTRUCTOR_SCHEDULE_BLOCK",
-                    "block_reason": block.get("reason", "予定ブロック")
-                })
-        
-        # 自由枠の予約情報、固定枠のスタッフブロック、スタッフの予定ブロックを統合
+        # 自由枠の予約情報と固定枠のスタッフブロックを統合
         all_instructor_reservations = list(schedule.get("reservation_assign_instructor", []))
         all_instructor_reservations.extend(fixed_slot_reservations)
-        all_instructor_reservations.extend(instructor_block_reservations)
         
         # スタッフのスタジオ紐付け情報を取得（キャッシュ付き、リトライあり）
         instructor_studio_map = get_cached_instructor_studio_map(client)
@@ -2511,7 +2633,6 @@ def get_choice_schedule():
                 "shift_instructor": schedule.get("shift_instructor", []),
                 "reservation_assign_instructor": all_instructor_reservations,
                 "fixed_slot_lessons": fixed_slot_lessons,
-                "instructor_schedule_blocks": instructor_schedule_blocks,  # スタッフの予定ブロック
                 "fixed_slot_interval": {
                     "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
                     "after_minutes": FIXED_SLOT_AFTER_INTERVAL_MINUTES
@@ -2652,21 +2773,7 @@ def get_choice_schedule_range():
             except Exception as e:
                 logger.warning(f"Failed to get fixed slot lessons for range: {e}")
         
-        # 4. スタッフの予定ブロックを各日付ごとに取得
-        instructor_schedule_blocks_by_date = {date: [] for date in dates}
-        if actual_studio_id:
-            for date in dates:
-                try:
-                    blocks_response = client.get_instructor_schedule_blocks(actual_studio_id, date)
-                    blocks_data = blocks_response.get("data", {}).get("instructor_schedule_blocks", {})
-                    if isinstance(blocks_data, dict):
-                        instructor_schedule_blocks_by_date[date] = blocks_data.get("list", [])
-                    elif isinstance(blocks_data, list):
-                        instructor_schedule_blocks_by_date[date] = blocks_data
-                except Exception as e:
-                    logger.warning(f"Failed to get instructor schedule blocks for {date}: {e}")
-        
-        # 5. 結果を統合
+        # 4. 結果を統合
         result_schedules = {}
         for date in dates:
             schedule = schedules.get(date)
@@ -2674,25 +2781,6 @@ def get_choice_schedule_range():
                 # 予約情報に固定枠を統合
                 all_reservations = schedule.get("reservation_assign_instructor", [])
                 all_reservations.extend(fixed_slot_reservations_by_date.get(date, []))
-                
-                # スタッフの予定ブロックを予約形式に変換して追加
-                instructor_block_reservations = []
-                for block in instructor_schedule_blocks_by_date.get(date, []):
-                    instructor_id = block.get("instructor_id")
-                    start_at_str = block.get("start_at")
-                    end_at_str = block.get("end_at")
-                    
-                    if instructor_id and start_at_str and end_at_str:
-                        instructor_block_reservations.append({
-                            "entity_id": instructor_id,
-                            "entity_type": "INSTRUCTOR",
-                            "start_at": start_at_str,
-                            "end_at": end_at_str,
-                            "reservation_type": "INSTRUCTOR_SCHEDULE_BLOCK",
-                            "block_reason": block.get("reason", "予定ブロック")
-                        })
-                
-                all_reservations.extend(instructor_block_reservations)
                 
                 result_schedules[date] = {
                     "date": date,
@@ -2703,7 +2791,6 @@ def get_choice_schedule_range():
                     "shift_instructor": schedule.get("shift_instructor", []),
                     "reservation_assign_instructor": all_reservations,
                     "fixed_slot_lessons": fixed_slot_lessons_by_date.get(date, []),
-                    "instructor_schedule_blocks": instructor_schedule_blocks_by_date.get(date, []),  # スタッフの予定ブロック
                     "fixed_slot_interval": {
                         "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
                         "after_minutes": FIXED_SLOT_AFTER_INTERVAL_MINUTES

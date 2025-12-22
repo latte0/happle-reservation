@@ -183,6 +183,13 @@ export interface ChoiceReservationRequest {
   instructor_ids?: number[]
   gender?: number
   birthday?: string
+  line_url?: string  // LINE公式アカウントURL
+  // 店舗連絡先情報（未指定の場合はhacomonoの店舗設定からフォールバック）
+  studio_zip?: string
+  studio_address?: string
+  studio_tel?: string
+  studio_url?: string
+  studio_email?: string
 }
 
 export interface ChoiceSchedule {

@@ -15,7 +15,15 @@ function LinkGeneratorContent() {
   const [utmSource, setUtmSource] = useState('')
   const [utmMedium, setUtmMedium] = useState('')
   const [utmCampaign, setUtmCampaign] = useState('')
+  const [lineUrl, setLineUrl] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
+  
+  // 店舗連絡先情報
+  const [studioZip, setStudioZip] = useState('')
+  const [studioAddress, setStudioAddress] = useState('')
+  const [studioTel, setStudioTel] = useState('')
+  const [studioUrl, setStudioUrl] = useState('')
+  const [studioEmail, setStudioEmail] = useState('')
   
   // 生成されたURL
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null)
@@ -74,6 +82,16 @@ function LinkGeneratorContent() {
     if (utmSource) params.set('utm_source', utmSource)
     if (utmMedium) params.set('utm_medium', utmMedium)
     if (utmCampaign) params.set('utm_campaign', utmCampaign)
+    
+    // LINE公式アカウントURL
+    if (lineUrl) params.set('line_url', lineUrl)
+    
+    // 店舗連絡先情報
+    if (studioZip) params.set('studio_zip', studioZip)
+    if (studioAddress) params.set('studio_address', studioAddress)
+    if (studioTel) params.set('studio_tel', studioTel)
+    if (studioUrl) params.set('studio_url', studioUrl)
+    if (studioEmail) params.set('studio_email', studioEmail)
     
     const queryString = params.toString()
     // 自由枠予約画面へのリンクを生成
@@ -204,6 +222,92 @@ function LinkGeneratorContent() {
                 </option>
               ))}
             </select>
+          </div>
+
+          {/* LINE公式アカウントURL */}
+          <div className="border-t border-accent-100 pt-6">
+            <h4 className="text-sm font-medium text-accent-700 mb-4">
+              LINE公式アカウント <span className="text-accent-400">（任意）</span>
+            </h4>
+            <div>
+              <label className="block text-xs text-accent-500 mb-1">LINE公式アカウントURL</label>
+              <input
+                type="text"
+                value={lineUrl}
+                onChange={(e) => setLineUrl(e.target.value)}
+                className="w-full px-4 py-3 border border-accent-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                placeholder="https://lin.ee/xxxxxxx"
+              />
+              <p className="text-xs text-accent-500 mt-1">
+                入力すると予約完了ページ・メールにLINE登録ボタンと注意事項が表示されます
+              </p>
+            </div>
+          </div>
+
+          {/* 店舗連絡先情報 */}
+          <div className="border-t border-accent-100 pt-6">
+            <h4 className="text-sm font-medium text-accent-700 mb-4">
+              店舗連絡先情報 <span className="text-accent-400">（任意・未入力の場合はhacomonoの店舗設定から取得）</span>
+            </h4>
+            
+            <div className="space-y-4">
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-accent-500 mb-1">郵便番号</label>
+                  <input
+                    type="text"
+                    value={studioZip}
+                    onChange={(e) => setStudioZip(e.target.value)}
+                    className="w-full px-3 py-2 border border-accent-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+                    placeholder="860-0845"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-accent-500 mb-1">電話番号</label>
+                  <input
+                    type="text"
+                    value={studioTel}
+                    onChange={(e) => setStudioTel(e.target.value)}
+                    className="w-full px-3 py-2 border border-accent-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+                    placeholder="090-3243-2739"
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-xs text-accent-500 mb-1">住所</label>
+                <input
+                  type="text"
+                  value={studioAddress}
+                  onChange={(e) => setStudioAddress(e.target.value)}
+                  className="w-full px-3 py-2 border border-accent-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+                  placeholder="熊本県熊本市中央区上通町イーストンビル1階"
+                />
+              </div>
+              
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-accent-500 mb-1">WebサイトURL</label>
+                  <input
+                    type="text"
+                    value={studioUrl}
+                    onChange={(e) => setStudioUrl(e.target.value)}
+                    className="w-full px-3 py-2 border border-accent-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+                    placeholder="https://example.com"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-accent-500 mb-1">メールアドレス</label>
+                  <input
+                    type="text"
+                    value={studioEmail}
+                    onChange={(e) => setStudioEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-accent-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent text-sm"
+                    placeholder="info@example.com"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* UTM Parameters */}
@@ -343,6 +447,47 @@ function LinkGeneratorContent() {
                 <div className="flex justify-between">
                   <span className="text-accent-500">utm_campaign</span>
                   <span className="text-accent-800">{utmCampaign}</span>
+                </div>
+              )}
+              {lineUrl && (
+                <div className="flex justify-between">
+                  <span className="text-accent-500">LINE公式アカウント</span>
+                  <span className="text-accent-800 truncate max-w-[200px]">{lineUrl}</span>
+                </div>
+              )}
+              {(studioZip || studioAddress || studioTel || studioUrl || studioEmail) && (
+                <div className="border-t border-green-100 pt-2 mt-2">
+                  <span className="text-accent-500 text-xs">店舗連絡先情報</span>
+                  {studioZip && (
+                    <div className="flex justify-between">
+                      <span className="text-accent-500">郵便番号</span>
+                      <span className="text-accent-800">{studioZip}</span>
+                    </div>
+                  )}
+                  {studioAddress && (
+                    <div className="flex justify-between">
+                      <span className="text-accent-500">住所</span>
+                      <span className="text-accent-800 truncate max-w-[200px]">{studioAddress}</span>
+                    </div>
+                  )}
+                  {studioTel && (
+                    <div className="flex justify-between">
+                      <span className="text-accent-500">電話番号</span>
+                      <span className="text-accent-800">{studioTel}</span>
+                    </div>
+                  )}
+                  {studioUrl && (
+                    <div className="flex justify-between">
+                      <span className="text-accent-500">WebサイトURL</span>
+                      <span className="text-accent-800 truncate max-w-[200px]">{studioUrl}</span>
+                    </div>
+                  )}
+                  {studioEmail && (
+                    <div className="flex justify-between">
+                      <span className="text-accent-500">メールアドレス</span>
+                      <span className="text-accent-800 truncate max-w-[200px]">{studioEmail}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

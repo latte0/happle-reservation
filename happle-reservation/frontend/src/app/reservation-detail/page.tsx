@@ -11,6 +11,14 @@ function ReservationDetailContent() {
   const reservationId = searchParams.get('reservation_id')
   const memberId = searchParams.get('member_id')
   const verifyHash = searchParams.get('verify')
+  const lineUrl = searchParams.get('line_url')
+  
+  // 店舗連絡先情報（URLパラメータから）
+  const studioZip = searchParams.get('studio_zip')
+  const studioAddress = searchParams.get('studio_address')
+  const studioTel = searchParams.get('studio_tel')
+  const studioUrl = searchParams.get('studio_url')
+  const studioEmail = searchParams.get('studio_email')
   
   const [detail, setDetail] = useState<ReservationDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -338,6 +346,179 @@ function ReservationDetailContent() {
                 <a href={`tel:${studio.tel}`} className="font-medium text-primary-600 hover:text-primary-700">
                   {studio.tel}
                 </a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* LINE Registration - LINE URLがある場合のみ表示 */}
+      {lineUrl && !isCanceled && (
+        <div className="card bg-gradient-to-br from-[#06C755]/10 to-white border border-[#06C755]/30 mb-8 animate-fade-in-delay-2">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 bg-[#06C755] rounded-lg flex items-center justify-center">
+              <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M19.365 9.863c.349 0 .63.285.63.631 0 .345-.281.63-.63.63H17.61v1.125h1.755c.349 0 .63.283.63.63 0 .344-.281.629-.63.629h-2.386c-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.627-.63h2.386c.349 0 .63.285.63.63 0 .349-.281.63-.63.63H17.61v1.125h1.755zm-3.855 3.016c0 .27-.174.51-.432.596-.064.021-.133.031-.199.031-.211 0-.391-.09-.51-.25l-2.443-3.317v2.94c0 .344-.279.629-.631.629-.346 0-.626-.285-.626-.629V8.108c0-.27.173-.51.43-.595.06-.023.136-.033.194-.033.195 0 .375.104.495.254l2.462 3.33V8.108c0-.345.282-.63.63-.63.345 0 .63.285.63.63v4.771zm-5.741 0c0 .344-.282.629-.631.629-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.627-.63.349 0 .631.285.631.63v4.771zm-2.466.629H4.917c-.345 0-.63-.285-.63-.629V8.108c0-.345.285-.63.63-.63.349 0 .63.285.63.63v4.141h1.756c.348 0 .629.283.629.63 0 .344-.281.629-.629.629M24 10.314C24 4.943 18.615.572 12 .572S0 4.943 0 10.314c0 4.811 4.27 8.842 10.035 9.608.391.082.923.258 1.058.59.12.301.079.766.038 1.08l-.164 1.02c-.045.301-.24 1.186 1.049.645 1.291-.539 6.916-4.078 9.436-6.975C23.176 14.393 24 12.458 24 10.314" />
+              </svg>
+            </div>
+            <h3 className="font-display font-bold text-lg text-accent-800">
+              【重要】公式LINEの登録
+            </h3>
+          </div>
+          
+          <p className="text-sm text-accent-700 mb-4">
+            公式LINEにフルネームをお送りいただきますと、ご予約完了となります。
+          </p>
+          
+          <a
+            href={lineUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-medium bg-[#06C755] text-white hover:bg-[#05a847] transition-all mb-4"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19.365 9.863c.349 0 .63.285.63.631 0 .345-.281.63-.63.63H17.61v1.125h1.755c.349 0 .63.283.63.63 0 .344-.281.629-.63.629h-2.386c-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.627-.63h2.386c.349 0 .63.285.63.63 0 .349-.281.63-.63.63H17.61v1.125h1.755zm-3.855 3.016c0 .27-.174.51-.432.596-.064.021-.133.031-.199.031-.211 0-.391-.09-.51-.25l-2.443-3.317v2.94c0 .344-.279.629-.631.629-.346 0-.626-.285-.626-.629V8.108c0-.27.173-.51.43-.595.06-.023.136-.033.194-.033.195 0 .375.104.495.254l2.462 3.33V8.108c0-.345.282-.63.63-.63.345 0 .63.285.63.63v4.771zm-5.741 0c0 .344-.282.629-.631.629-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.627-.63.349 0 .631.285.631.63v4.771zm-2.466.629H4.917c-.345 0-.63-.285-.63-.629V8.108c0-.345.285-.63.63-.63.349 0 .63.285.63.63v4.141h1.756c.348 0 .629.283.629.63 0 .344-.281.629-.629.629M24 10.314C24 4.943 18.615.572 12 .572S0 4.943 0 10.314c0 4.811 4.27 8.842 10.035 9.608.391.082.923.258 1.058.59.12.301.079.766.038 1.08l-.164 1.02c-.045.301-.24 1.186 1.049.645 1.291-.539 6.916-4.078 9.436-6.975C23.176 14.393 24 12.458 24 10.314" />
+            </svg>
+            公式LINEを登録
+          </a>
+          
+          <ul className="space-y-2 text-sm text-accent-600">
+            <li className="flex items-start gap-2">
+              <span className="text-[#06C755] mt-0.5">※</span>
+              <span>下記内容をご確認の上、友だち追加をお願いします</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-[#06C755] mt-0.5">※</span>
+              <span>LINEをお持ちでない方は空メールをお送りくださいませ</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-[#06C755] mt-0.5">※</span>
+              <span>2日以内にご返信がない場合は自動キャンセルさせていただきますのでご了承ください</span>
+            </li>
+          </ul>
+        </div>
+      )}
+
+      {/* 当日の注意事項 */}
+      {!isCanceled && (
+        <div className="card bg-gradient-to-br from-amber-50 to-white border border-amber-100 mb-8 animate-fade-in-delay-2">
+          <h3 className="font-display font-bold text-accent-800 mb-4">
+            【当日の注意事項について】
+          </h3>
+          <ul className="space-y-3 text-sm text-accent-600">
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="text-amber-600 text-xs font-bold">!</span>
+              </span>
+              <span>持病がある方に関しては施術によっては医師の同意書が必要になります</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="text-amber-600 text-xs font-bold">!</span>
+              </span>
+              <span>妊娠中の方の施術はお断りさせていただいております</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="text-amber-600 text-xs font-bold">!</span>
+              </span>
+              <span>未成年の方は親権者同伴以外の場合、施術不可となります</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                <svg className="w-3 h-3 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                </svg>
+              </span>
+              <span>生理中でも施術は可能です</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="text-amber-600 text-xs font-bold">!</span>
+              </span>
+              <span>お支払いはクレジットカードのみとなります（カード番号が必要になります）</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="w-5 h-5 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="text-amber-600 text-xs font-bold">!</span>
+              </span>
+              <span>初回お試しは全店舗を通して、お一人様一回までとなっております。2回目のご利用の方は通常料金でのご案内となります</span>
+            </li>
+          </ul>
+        </div>
+      )}
+
+      {/* キャンセルについて */}
+      {!isCanceled && (
+        <div className="card bg-gradient-to-br from-red-50 to-white border border-red-100 mb-8 animate-fade-in-delay-2">
+          <h3 className="font-display font-bold text-accent-800 mb-4">
+            【キャンセルについて】
+          </h3>
+          <ul className="space-y-3 text-sm text-accent-600">
+            <li className="flex items-start gap-3">
+              <span className="text-red-500 mt-0.5">◆</span>
+              <span>
+                {lineUrl 
+                  ? 'キャンセルはご予約日の前日18時までにLINEにてご連絡くださいませ' 
+                  : 'キャンセルはご予約日の前日18時までにご連絡くださいませ'}
+              </span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="text-red-500 mt-0.5">◆</span>
+              <span>無断キャンセルの場合は正規の施術代をご負担いただきます。また、次回よりご予約がお取りいただけなくなる場合がございます</span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="text-red-500 mt-0.5">◆</span>
+              <span>前日18時以降のキャンセルやご変更は直前キャンセル料2200円を銀行振り込みにてご請求させていただきます</span>
+            </li>
+          </ul>
+          <p className="text-xs text-accent-500 mt-4">
+            お願いばかりで申し訳ございませんが、一部ルールをお守りいただけない方がいらっしゃいますので予めご了承くださいませ。
+          </p>
+        </div>
+      )}
+
+      {/* 店舗情報 */}
+      {(detail.studio_name || studioZip || studioAddress || studioTel || studioUrl || studioEmail) && (
+        <div className="card bg-gradient-to-br from-gray-50 to-white border border-gray-100 mb-8 animate-fade-in-delay-2">
+          <h3 className="font-display font-bold text-accent-800 mb-4">
+            店舗情報
+          </h3>
+          <div className="space-y-2 text-sm text-accent-600">
+            {detail.studio_name && (
+              <div className="font-medium text-accent-800">{detail.studio_name}</div>
+            )}
+            {(studioZip || studioAddress) && (
+              <div className="flex items-start gap-2">
+                <svg className="w-4 h-4 mt-0.5 text-accent-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <span>{studioZip && `〒${studioZip} `}{studioAddress}</span>
+              </div>
+            )}
+            {studioTel && (
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-accent-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                </svg>
+                <a href={`tel:${studioTel}`} className="text-primary-600 hover:text-primary-700">{studioTel}</a>
+              </div>
+            )}
+            {studioEmail && (
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-accent-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <a href={`mailto:${studioEmail}`} className="text-primary-600 hover:text-primary-700">{studioEmail}</a>
+              </div>
+            )}
+            {studioUrl && (
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-accent-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                </svg>
+                <a href={studioUrl} target="_blank" rel="noopener noreferrer" className="text-primary-600 hover:text-primary-700">{studioUrl}</a>
               </div>
             )}
           </div>

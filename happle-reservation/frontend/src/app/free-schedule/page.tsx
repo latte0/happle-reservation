@@ -38,6 +38,16 @@ function FreeScheduleContent() {
   const utmSource = searchParams.get('utm_source')
   const utmMedium = searchParams.get('utm_medium')
   const utmCampaign = searchParams.get('utm_campaign')
+  
+  // LINE公式アカウントURL
+  const lineUrl = searchParams.get('line_url')
+  
+  // 店舗連絡先情報
+  const studioZip = searchParams.get('studio_zip')
+  const studioAddress = searchParams.get('studio_address')
+  const studioTel = searchParams.get('studio_tel')
+  const studioUrl = searchParams.get('studio_url')
+  const studioEmail = searchParams.get('studio_email')
 
   // URLパラメータがある場合は初期化完了まで待つ
   const hasUrlParams = !!(initialStudioId && initialProgramId)
@@ -465,6 +475,16 @@ function FreeScheduleContent() {
     if (utmSource) params.set('utm_source', utmSource)
     if (utmMedium) params.set('utm_medium', utmMedium)
     if (utmCampaign) params.set('utm_campaign', utmCampaign)
+    
+    // LINE URLを引き継ぎ
+    if (lineUrl) params.set('line_url', lineUrl)
+    
+    // 店舗連絡先情報を引き継ぎ
+    if (studioZip) params.set('studio_zip', studioZip)
+    if (studioAddress) params.set('studio_address', studioAddress)
+    if (studioTel) params.set('studio_tel', studioTel)
+    if (studioUrl) params.set('studio_url', studioUrl)
+    if (studioEmail) params.set('studio_email', studioEmail)
     
     router.push(`/free-booking?${params.toString()}`)
   }

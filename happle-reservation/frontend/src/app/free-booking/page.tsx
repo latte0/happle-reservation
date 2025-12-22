@@ -36,6 +36,16 @@ function FreeBookingContent() {
   const utmSource = searchParams.get('utm_source')
   const utmMedium = searchParams.get('utm_medium')
   const utmCampaign = searchParams.get('utm_campaign')
+  
+  // LINE公式アカウントURL
+  const lineUrl = searchParams.get('line_url')
+  
+  // 店舗連絡先情報
+  const studioZip = searchParams.get('studio_zip')
+  const studioAddress = searchParams.get('studio_address')
+  const studioTel = searchParams.get('studio_tel')
+  const studioUrl = searchParams.get('studio_url')
+  const studioEmail = searchParams.get('studio_email')
 
   // Derive date and time from startAt if not provided explicitly
   const parsedStartAt = startAt ? parse(startAt, 'yyyy-MM-dd HH:mm:ss.SSS', new Date()) : null
@@ -187,7 +197,13 @@ function FreeBookingContent() {
         guest_email: formData.email,
         guest_phone: formData.phone,
         guest_note: formData.note,
-        studio_id: studioId ? parseInt(studioId) : undefined
+        studio_id: studioId ? parseInt(studioId) : undefined,
+        line_url: lineUrl || undefined,
+        studio_zip: studioZip || undefined,
+        studio_address: studioAddress || undefined,
+        studio_tel: studioTel || undefined,
+        studio_url: studioUrl || undefined,
+        studio_email: studioEmail || undefined
       })
       
       if (result.success && result.reservation) {
@@ -210,6 +226,16 @@ function FreeBookingContent() {
         if (utmSource) params.set('utm_source', utmSource)
         if (utmMedium) params.set('utm_medium', utmMedium)
         if (utmCampaign) params.set('utm_campaign', utmCampaign)
+        
+        // LINE URLを引き継ぎ
+        if (lineUrl) params.set('line_url', lineUrl)
+        
+        // 店舗連絡先情報を引き継ぎ
+        if (studioZip) params.set('studio_zip', studioZip)
+        if (studioAddress) params.set('studio_address', studioAddress)
+        if (studioTel) params.set('studio_tel', studioTel)
+        if (studioUrl) params.set('studio_url', studioUrl)
+        if (studioEmail) params.set('studio_email', studioEmail)
         
         router.push(`/complete?${params.toString()}`)
       } else {
