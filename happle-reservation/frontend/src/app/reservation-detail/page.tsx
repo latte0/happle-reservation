@@ -475,14 +475,14 @@ function ReservationDetailContent() {
       )}
 
       {/* 店舗情報 */}
-      {(detail.studio_name || studioZip || studioAddress || studioTel || studioUrl || studioEmail) && (
+      {(studio?.name || studioZip || studioAddress || studioTel || studioUrl || studioEmail) && (
         <div className="card bg-gradient-to-br from-gray-50 to-white border border-gray-100 mb-8 animate-fade-in-delay-2">
           <h3 className="font-display font-bold text-accent-800 mb-4">
             店舗情報
           </h3>
           <div className="space-y-2 text-sm text-accent-600">
-            {detail.studio_name && (
-              <div className="font-medium text-accent-800">{detail.studio_name}</div>
+            {studio?.name && (
+              <div className="font-medium text-accent-800">{studio.name}</div>
             )}
             {(studioZip || studioAddress) && (
               <div className="flex items-start gap-2">
