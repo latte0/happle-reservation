@@ -24,11 +24,11 @@
 
 | 制約項目 | 予約選択画面（FE） | 予約実行時（BE） | 一致 |
 |---------|-------------------|-----------------|------|
-| プログラムの選択可能設備か | ❌（未実装） | ❌（未実装） | ✅ |
-| 設備の既存予約と重複しないか | ❌（未実装） | ❌（未実装） | ✅ |
-| 設備の予定ブロックと重複しないか | ❌（未実装） | ❌（未実装） | ✅ |
+| プログラムの選択可能設備か | ✅ | ✅ | ✅ |
+| 設備の既存予約と重複しないか | ✅ | ✅ | ✅ |
+| 設備の予定ブロックと重複しないか | ✅ | ✅ | ✅ |
 
-> **Note**: 設備の制約チェックは現在未実装です。`selectable_resource_details` と `shift_slots`（`entity_type: RESOURCE`）の情報は取得していますが、空き状況判定には使用していません。
+> **Note**: 設備の制約チェックが必要なのは `selectable_resource_details.type` が `SELECTED`, `FIXED`, `RANDOM_SELECTED` の場合のみです。`ALL`, `RANDOM_ALL` の場合は設備チェックをスキップします。
 
 ### ⚠️ 差異がある項目
 
@@ -79,6 +79,12 @@
     end_at: string,
     title?: string,
     description?: string
+  }],
+  reservation_assign_resource: [{  // 設備の予約情報
+    entity_id: number,        // resource_id
+    start_at: string,
+    end_at: string,
+    reservation_type?: string // CHOICE, SHIFT_SLOT
   }]
 }
 ```
@@ -148,7 +154,19 @@
    └─ 予定ブロック（休憩ブロック）チェック
        └─ reservation_type が SHIFT_SLOT の場合はインターバルなしでブロック
 
-3. 1人でも空いているスタッフがいれば「予約可能」
+3. 1人でも空いているスタッフがいれば設備チェックへ
+
+4. 設備チェック（プログラムが設備を必要とする場合のみ）
+   │
+   ├─ 選択可能設備IDを取得
+   │   └─ selectable_resource_details.type が ALL/RANDOM_ALL → チェック不要
+   │   └─ SELECTED/FIXED/RANDOM_SELECTED → items の resource_id を取得
+   │
+   ├─ 各設備についてループ
+   │   └─ reservation_assign_resource と重複するか
+   │   └─ 設備の予定ブロック（SHIFT_SLOT）と重複するか
+   │
+   └─ 1つでも空いている設備があれば「予約可能」
 ```
 
 ### 予約実行時（バックエンド）
@@ -184,6 +202,22 @@
        └─ reservation_type が SHIFT_SLOT の場合はインターバルなしでブロック
 
 5. 空いているスタッフの最初の1名を使用
+
+6. 設備チェック（プログラムが設備を必要とする場合のみ）
+   │
+   ├─ selectable_resource_details から選択可能設備IDを取得
+   │   └─ type が ALL/RANDOM_ALL → チェック不要
+   │   └─ SELECTED/FIXED/RANDOM_SELECTED → items の resource_id を取得
+   │
+   ├─ reservation_assign_resource（既存予約）を取得
+   │
+   ├─ 設備の予定ブロック（shift_slots で entity_type: RESOURCE）を取得
+   │
+   ├─ 各設備についてループ
+   │   └─ 既存予約と重複するか
+   │   └─ 予定ブロックと重複するか
+   │
+   └─ 空いている設備の最初の1つを使用（resource_id_set パラメータに設定）
 ```
 
 ---
@@ -327,18 +361,19 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 | 既存予約の重複チェック（インターバル考慮） | `reservation_assign_instructor` を使用 |
 | 予定ブロック（休憩）チェック | `shift_slots` API を使用 |
 | 固定枠レッスンのブロック | `studio_lessons` API を使用 |
+| 設備の空き状況チェック | `reservation_assign_resource` を使用 |
+| 設備の選択可能チェック | `selectable_resource_details` を使用 |
+| 設備の予定ブロックチェック | `shift_slots`（`entity_type: RESOURCE`）を使用 |
 
-### ❌ 未実装
+### 設備制約の動作
 
-| 機能 | 説明 | 必要なAPI/情報 |
-|------|------|---------------|
-| 設備の空き状況チェック | プログラムで設備が必須の場合の制約 | `reservation_assign_resource`（未取得） |
-| 設備の選択可能チェック | `selectable_resource_details` の検証 | 情報は取得済み、ロジック未実装 |
-| 設備の予定ブロックチェック | 設備のメンテナンス時間等 | `shift_slots`（`entity_type: RESOURCE`）は取得済み |
+1. **フロントエンド**:
+   - プログラムの `selectable_resource_details.type` が `SELECTED`, `FIXED`, `RANDOM_SELECTED` の場合のみ設備チェックを実行
+   - `reservation_assign_resource` で既存予約との重複を確認
+   - スタッフが空いていても設備が全てブロックされていれば「×（設備使用中）」と表示
 
-### 設備制約の実装に必要な作業
-
-1. **choice/schedule API** から `reservation_assign_resource` を取得
-2. **予約可能判定ロジック** に設備の空き状況チェックを追加
-3. **予約作成時** に設備IDを指定（`resource_id_set` パラメータ）
+2. **バックエンド**:
+   - 予約作成時に設備の空き状況をチェック
+   - 空いている設備があれば `resource_id_set` パラメータに設定して予約
+   - 設備がない場合はエラー「この時間帯に利用可能な設備がありません」を返す
 

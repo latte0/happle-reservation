@@ -2285,11 +2285,19 @@ def create_choice_reservation():
                 shift_slots_data = shift_slots_response.get("data", {}).get("shift_slots", {})
                 shift_slots = shift_slots_data.get("list", []) if isinstance(shift_slots_data, dict) else shift_slots_data
                 
-                # entity_type === 'INSTRUCTOR' の予定ブロックを予約情報に追加
+                # 予定ブロックをスタッフと設備に分類
+                resource_blocks = []
                 for slot in shift_slots:
                     entity_type = slot.get("entity_type", "").upper()
                     if entity_type == "INSTRUCTOR":
                         reserved_instructors.append({
+                            "entity_id": slot.get("entity_id"),
+                            "start_at": slot.get("start_at"),
+                            "end_at": slot.get("end_at"),
+                            "reservation_type": "SHIFT_SLOT"
+                        })
+                    elif entity_type == "RESOURCE":
+                        resource_blocks.append({
                             "entity_id": slot.get("entity_id"),
                             "start_at": slot.get("start_at"),
                             "end_at": slot.get("end_at"),
@@ -2400,6 +2408,90 @@ def create_choice_reservation():
                     "message": "この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
                     "error_code": "NO_AVAILABLE_INSTRUCTOR"
                 }), 400
+            
+            # 5. 設備の空き状況をチェック
+            selectable_resource_details = program.get("selectable_resource_details", [])
+            resource_id_to_use = None
+            
+            if selectable_resource_details:
+                first_resource_detail = selectable_resource_details[0]
+                resource_type = first_resource_detail.get("type")
+                
+                # 選択可能設備IDを取得（None = 全設備選択可能）
+                selectable_resource_ids = None
+                if resource_type in ["SELECTED", "FIXED", "RANDOM_SELECTED"]:
+                    items = first_resource_detail.get("items", [])
+                    selectable_resource_ids = set(item.get("resource_id") for item in items if item.get("resource_id"))
+                    logger.info(f"Program {program_id} has selectable resources (type={resource_type}): {selectable_resource_ids}")
+                
+                # 設備の既存予約を取得（hacomono APIから）
+                reserved_resources = list(schedule.get("reservation_assign_resource", []))
+                reserved_resources.extend(resource_blocks)  # 設備の予定ブロックも追加
+                
+                # 予約済み設備IDを取得
+                reserved_resource_ids = set()
+                for reserved in reserved_resources:
+                    try:
+                        reserved_start_str = reserved.get("start_at", "")
+                        reserved_end_str = reserved.get("end_at", "")
+                        if not reserved_start_str or not reserved_end_str:
+                            continue
+                        reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
+                        reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
+                        
+                        # 設備の予定ブロック（SHIFT_SLOT）の場合はインターバルを考慮せずブロック
+                        reservation_type = reserved.get("reservation_type", "").upper()
+                        is_block = reservation_type in ["BREAK", "BLOCK", "REST", "SHIFT_SLOT"]
+                        
+                        if is_block:
+                            block_start = reserved_start
+                            block_end = reserved_end
+                        else:
+                            # 設備予約のブロック範囲（インターバルなし：設備は時間ぴったりで使用）
+                            block_start = reserved_start
+                            block_end = reserved_end
+                        
+                        # 予約したい時間帯がブロック範囲と重複するかチェック
+                        if start_datetime < block_end and proposed_end > block_start:
+                            reserved_resource_ids.add(reserved.get("entity_id"))
+                    except Exception as e:
+                        logger.warning(f"Failed to parse reserved resource time: {e}")
+                        continue
+                
+                # 空いている設備を抽出
+                available_resources = []
+                if selectable_resource_ids:
+                    for resource_id in selectable_resource_ids:
+                        if resource_id not in reserved_resource_ids:
+                            available_resources.append(resource_id)
+                else:
+                    # ALL, RANDOM_ALL の場合は設備チェックなし
+                    logger.info(f"Program {program_id} allows all resources, skipping resource availability check")
+                
+                if selectable_resource_ids:  # 設備が必要なプログラムの場合
+                    if available_resources:
+                        resource_id_to_use = available_resources[0]  # 最初の1つを使用
+                        logger.info(f"Found available resources: {available_resources}, using: {resource_id_to_use}")
+                    else:
+                        # 空いている設備が見つからない場合はエラー
+                        logger.error(f"No available resources found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
+                        
+                        # Slack通知（エラー）
+                        send_slack_notification(
+                            status="error",
+                            guest_name=guest_name,
+                            guest_email=guest_email,
+                            guest_phone=guest_phone,
+                            studio_name="",
+                            error_message="この時間帯に利用可能な設備がありません。別の時間帯をお選びください。",
+                            error_code="NO_AVAILABLE_RESOURCE"
+                        )
+                        
+                        return jsonify({
+                            "error": "予約の作成に失敗しました",
+                            "message": "この時間帯に利用可能な設備がありません。別の時間帯をお選びください。",
+                            "error_code": "NO_AVAILABLE_RESOURCE"
+                        }), 400
         except Exception as e:
             logger.warning(f"Failed to get available instructors: {e}")
             
@@ -2430,8 +2522,12 @@ def create_choice_reservation():
     }
     
     # オプションパラメータ
+    # 設備IDを設定（バックエンドで選んだ場合 or フロントエンドから指定された場合）
     if data.get("resource_id_set"):
         reservation_data["resource_id_set"] = data["resource_id_set"]
+    elif 'resource_id_to_use' in dir() and resource_id_to_use:
+        reservation_data["resource_id_set"] = [resource_id_to_use]
+        logger.info(f"Setting resource_id_set from backend selection: {resource_id_to_use}")
     if data.get("reservation_note"):
         reservation_data["reservation_note"] = data["reservation_note"]
     if data.get("is_send_mail") is not None:
@@ -2759,7 +2855,8 @@ def get_choice_schedule():
                 shift_slots_data = shift_slots_response.get("data", {}).get("shift_slots", {})
                 shift_slots = shift_slots_data.get("list", []) if isinstance(shift_slots_data, dict) else shift_slots_data
                 
-                # entity_type === 'INSTRUCTOR' の予定ブロックを予約情報に統合
+                # 予定ブロックをスタッフと設備に分類
+                resource_shift_slot_reservations = []
                 for slot in shift_slots:
                     entity_type = slot.get("entity_type", "").upper()
                     if entity_type == "INSTRUCTOR":
@@ -2768,12 +2865,22 @@ def get_choice_schedule():
                             "entity_type": "INSTRUCTOR",
                             "start_at": slot.get("start_at"),
                             "end_at": slot.get("end_at"),
-                            "reservation_type": "SHIFT_SLOT",  # 予定ブロック
+                            "reservation_type": "SHIFT_SLOT",
+                            "title": slot.get("title", ""),
+                            "description": slot.get("description", "")
+                        })
+                    elif entity_type == "RESOURCE":
+                        resource_shift_slot_reservations.append({
+                            "entity_id": slot.get("entity_id"),
+                            "entity_type": "RESOURCE",
+                            "start_at": slot.get("start_at"),
+                            "end_at": slot.get("end_at"),
+                            "reservation_type": "SHIFT_SLOT",
                             "title": slot.get("title", ""),
                             "description": slot.get("description", "")
                         })
                 
-                logger.info(f"Found {len(shift_slots)} shift slots ({len(shift_slot_reservations)} instructor blocks) for {date}")
+                logger.info(f"Found {len(shift_slots)} shift slots ({len(shift_slot_reservations)} instructor, {len(resource_shift_slot_reservations)} resource) for {date}")
             except Exception as e:
                 logger.warning(f"Failed to get shift slots: {e}")
         
@@ -2781,6 +2888,10 @@ def get_choice_schedule():
         all_instructor_reservations = list(schedule.get("reservation_assign_instructor", []))
         all_instructor_reservations.extend(fixed_slot_reservations)
         all_instructor_reservations.extend(shift_slot_reservations)
+        
+        # 設備の予約情報を統合（hacomono APIから取得 + 予定ブロック）
+        all_resource_reservations = list(schedule.get("reservation_assign_resource", []))
+        all_resource_reservations.extend(resource_shift_slot_reservations)
         
         # スタッフのスタジオ紐付け情報を取得（キャッシュ付き、リトライあり）
         instructor_studio_map = get_cached_instructor_studio_map(client)
@@ -2794,6 +2905,7 @@ def get_choice_schedule():
                 "shift_studio_business_hour": schedule.get("shift_studio_business_hour", []),
                 "shift_instructor": schedule.get("shift_instructor", []),
                 "reservation_assign_instructor": all_instructor_reservations,
+                "reservation_assign_resource": all_resource_reservations,  # 設備の予約情報
                 "fixed_slot_lessons": fixed_slot_lessons,
                 "fixed_slot_interval": {
                     "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
@@ -2939,6 +3051,7 @@ def get_choice_schedule_range():
         # 4. 予定ブロック（休憩ブロック）を各日付ごとに取得
         shift_slots_by_date = {date: [] for date in dates}
         shift_slot_reservations_by_date = {date: [] for date in dates}
+        resource_shift_slot_reservations_by_date = {date: [] for date in dates}
         
         if actual_studio_id:
             for date in dates:
@@ -2948,13 +3061,23 @@ def get_choice_schedule_range():
                     shift_slots = shift_slots_data.get("list", []) if isinstance(shift_slots_data, dict) else shift_slots_data
                     shift_slots_by_date[date] = shift_slots
                     
-                    # entity_type === 'INSTRUCTOR' の予定ブロックを予約情報に統合
+                    # 予定ブロックをスタッフと設備に分類
                     for slot in shift_slots:
                         entity_type = slot.get("entity_type", "").upper()
                         if entity_type == "INSTRUCTOR":
                             shift_slot_reservations_by_date[date].append({
                                 "entity_id": slot.get("entity_id"),
                                 "entity_type": "INSTRUCTOR",
+                                "start_at": slot.get("start_at"),
+                                "end_at": slot.get("end_at"),
+                                "reservation_type": "SHIFT_SLOT",
+                                "title": slot.get("title", ""),
+                                "description": slot.get("description", "")
+                            })
+                        elif entity_type == "RESOURCE":
+                            resource_shift_slot_reservations_by_date[date].append({
+                                "entity_id": slot.get("entity_id"),
+                                "entity_type": "RESOURCE",
                                 "start_at": slot.get("start_at"),
                                 "end_at": slot.get("end_at"),
                                 "reservation_type": "SHIFT_SLOT",
@@ -2969,10 +3092,14 @@ def get_choice_schedule_range():
         for date in dates:
             schedule = schedules.get(date)
             if schedule:
-                # 予約情報に固定枠と予定ブロックを統合
-                all_reservations = schedule.get("reservation_assign_instructor", [])
-                all_reservations.extend(fixed_slot_reservations_by_date.get(date, []))
-                all_reservations.extend(shift_slot_reservations_by_date.get(date, []))
+                # スタッフの予約情報に固定枠と予定ブロックを統合
+                all_instructor_reservations = list(schedule.get("reservation_assign_instructor", []))
+                all_instructor_reservations.extend(fixed_slot_reservations_by_date.get(date, []))
+                all_instructor_reservations.extend(shift_slot_reservations_by_date.get(date, []))
+                
+                # 設備の予約情報に予定ブロックを統合
+                all_resource_reservations = list(schedule.get("reservation_assign_resource", []))
+                all_resource_reservations.extend(resource_shift_slot_reservations_by_date.get(date, []))
                 
                 result_schedules[date] = {
                     "date": date,
@@ -2981,7 +3108,8 @@ def get_choice_schedule_range():
                     "shift": schedule.get("shift"),
                     "shift_studio_business_hour": schedule.get("shift_studio_business_hour", []),
                     "shift_instructor": schedule.get("shift_instructor", []),
-                    "reservation_assign_instructor": all_reservations,
+                    "reservation_assign_instructor": all_instructor_reservations,
+                    "reservation_assign_resource": all_resource_reservations,  # 設備の予約情報
                     "fixed_slot_lessons": fixed_slot_lessons_by_date.get(date, []),
                     "fixed_slot_interval": {
                         "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,

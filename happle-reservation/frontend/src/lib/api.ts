@@ -302,6 +302,17 @@ export interface ChoiceSchedule {
     title?: string  // SHIFT_SLOTの場合のみ
     description?: string  // SHIFT_SLOTの場合のみ
   }>
+  // 設備の予約情報
+  reservation_assign_resource?: Array<{
+    reservation_id?: number
+    entity_id: number
+    date?: string
+    start_at: string
+    end_at: string
+    reservation_type?: string  // CHOICE, or SHIFT_SLOT
+    title?: string  // SHIFT_SLOTの場合のみ
+    description?: string  // SHIFT_SLOTの場合のみ
+  }>
   // 固定枠レッスン情報
   fixed_slot_lessons?: Array<{
     id: number

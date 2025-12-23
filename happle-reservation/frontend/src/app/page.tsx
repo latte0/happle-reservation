@@ -18,6 +18,7 @@ type UnavailableReason =
   | 'deadline_passed'     // 予約締切を過ぎている
   | 'interval_blocked'    // インターバルでブロック中
   | 'no_selectable_staff' // 選択可能なスタッフがいない
+  | 'no_available_resource' // 利用可能な設備がない
 
 interface GridSlot {
   date: Date
@@ -283,6 +284,63 @@ function FreeScheduleContent() {
     })
   }
 
+  // 設備が選択可能か取得するヘルパー関数
+  const getSelectableResourceIds = (): Set<number> | null => {
+    const details = selectedProgram?.selectable_resource_details
+    if (!details || details.length === 0) return null  // 設備不要
+    
+    const detail = details[0]
+    if (detail.type === 'ALL' || detail.type === 'RANDOM_ALL') return null  // 全設備から選択可能 = チェック不要
+    if (detail.type === 'SELECTED' || detail.type === 'FIXED' || detail.type === 'RANDOM_SELECTED') {
+      const selectableIds = detail.items?.map(item => item.resource_id).filter((id): id is number => !!id) ?? []
+      return new Set(selectableIds)
+    }
+    return null
+  }
+
+  // 設備がブロックされているかチェック
+  const isResourceBlocked = (
+    resourceId: number,
+    cellTime: Date,
+    cellEndTime: Date,
+    reservedResources: Array<{ entity_id: number; start_at: string; end_at: string; reservation_type?: string }>
+  ): boolean => {
+    return reservedResources.some(res => {
+      if (res.entity_id !== resourceId) return false
+      
+      const resStart = parseISO(res.start_at)
+      const resEnd = parseISO(res.end_at)
+      
+      // 設備のブロック範囲（インターバルなし）
+      return cellTime < resEnd && cellEndTime > resStart
+    })
+  }
+
+  // 指定時間帯に利用可能な設備があるかチェック
+  const hasAvailableResource = (
+    cellTime: Date,
+    cellEndTime: Date,
+    schedule: ChoiceSchedule | null
+  ): boolean => {
+    const selectableResourceIds = getSelectableResourceIds()
+    if (!selectableResourceIds) return true  // 設備不要なプログラム
+    
+    if (selectableResourceIds.size === 0) return false  // 設備が必要だが選択可能なものがない
+    
+    const reservedResources = schedule?.reservation_assign_resource || []
+    
+    // 選択可能な設備の中で、ブロックされていないものがあるか
+    const resourceIdArray = Array.from(selectableResourceIds)
+    for (let i = 0; i < resourceIdArray.length; i++) {
+      const resourceId = resourceIdArray[i]
+      if (!isResourceBlocked(resourceId, cellTime, cellEndTime, reservedResources)) {
+        return true  // 利用可能な設備が見つかった
+      }
+    }
+    
+    return false  // 全ての設備がブロックされている
+  }
+
   // Grid Generation Logic (Same as before)
   const generateGrid = () => {
     if (scheduleMap.size === 0) return []
@@ -418,8 +476,14 @@ function FreeScheduleContent() {
               }
               
               if (availableCount > 0) {
-                isAvailable = true
-                unavailableReason = 'available'
+                // スタッフは空いている → 設備もチェック
+                if (hasAvailableResource(cellTime, cellEndTime, schedule)) {
+                  isAvailable = true
+                  unavailableReason = 'available'
+                } else {
+                  // スタッフは空いているが設備がない
+                  unavailableReason = 'no_available_resource'
+                }
               } else if (!hasSelectableInstructor && hasInstructorInSlot) {
                 // シフトに入っているが選択可能なスタッフがいない
                 unavailableReason = 'no_selectable_staff'
@@ -782,6 +846,11 @@ function FreeScheduleContent() {
                                             cellClass = "bg-gray-100/50"
                                             tooltip = "対応可能なスタッフがいません"
                                             break
+                                        case 'no_available_resource':
+                                            content = <span className="text-orange-400 text-xl">×</span>
+                                            cellClass = "bg-orange-50/50"
+                                            tooltip = "設備が使用中です"
+                                            break
                                         default:
                                             tooltip = "予約不可"
                                     }
@@ -843,6 +912,9 @@ function FreeScheduleContent() {
                 </div>
                 <div className="flex items-center gap-1">
                     <span className="text-purple-400 text-lg">×</span> 間隔調整中
+                </div>
+                <div className="flex items-center gap-1">
+                    <span className="text-orange-400 text-lg">×</span> 設備使用中
                 </div>
                 <div className="flex items-center gap-1">
                     <span className="text-gray-300">-</span> 営業時間外
