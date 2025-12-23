@@ -2221,7 +2221,15 @@ def create_choice_reservation():
             shift_instructors = schedule.get("shift_instructor", [])
             reserved_instructors = schedule.get("reservation_assign_instructor", [])
             
-            # 予約済みのスタッフIDを取得
+            # プログラムの所要時間とインターバルを取得
+            service_minutes = program.get("service_minutes", 30)
+            before_interval = program.get("before_interval_minutes") or 0
+            after_interval = program.get("after_interval_minutes") or 0
+            
+            # 予約したい時間帯
+            proposed_end = start_datetime + timedelta(minutes=service_minutes)
+            
+            # 予約済みのスタッフIDを取得（インターバルを考慮）
             reserved_instructor_ids = set()
             for reserved in reserved_instructors:
                 try:
@@ -2232,8 +2240,15 @@ def create_choice_reservation():
                     # ISO8601形式の日時をパース（タイムゾーン情報を処理してJSTに統一）
                     reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
                     reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
-                    # 時間が重なっているかチェック
-                    if start_datetime < reserved_end and start_datetime + timedelta(minutes=30) > reserved_start:
+                    
+                    # 既存予約のブロック範囲（インターバル含む）
+                    # before_interval: 予約開始前のブロック時間
+                    # after_interval: 予約終了後のブロック時間
+                    block_start = reserved_start - timedelta(minutes=before_interval)
+                    block_end = reserved_end + timedelta(minutes=after_interval)
+                    
+                    # 予約したい時間帯がブロック範囲と重複するかチェック
+                    if start_datetime < block_end and proposed_end > block_start:
                         reserved_instructor_ids.add(reserved.get("entity_id"))
                 except Exception as e:
                     logger.warning(f"Failed to parse reserved instructor time: {e}")
@@ -2266,8 +2281,8 @@ def create_choice_reservation():
                     instructor_start = datetime.fromisoformat(instructor_start_str.replace("Z", "+00:00")).astimezone(jst)
                     instructor_end = datetime.fromisoformat(instructor_end_str.replace("Z", "+00:00")).astimezone(jst)
                 
-                    # シフト時間内で、予約が入っていないスタッフ
-                    if (instructor_start <= start_datetime < instructor_end and 
+                    # シフト時間内にコースが収まり、予約が入っていないスタッフ
+                    if (instructor_start <= start_datetime and proposed_end <= instructor_end and 
                         instructor_id not in reserved_instructor_ids):
                         available_instructors.append(instructor_id)
                 except Exception as e:
