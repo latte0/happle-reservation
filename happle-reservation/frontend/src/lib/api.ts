@@ -84,6 +84,7 @@ export interface SelectableResourceItem {
   resource_id: number
   resource_code?: string
   resource_name?: string
+  priority?: string | number  // 優先順位
 }
 
 // 時間帯設定（設備・スタッフの使用時間帯を分で指定）

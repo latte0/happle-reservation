@@ -402,32 +402,64 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 
 ## selectable_resource_details の仕様
 
-プログラムに紐づく設備（リソース）の設定。スタッフと同様の構造:
+プログラムに紐づく設備（リソース）の設定。
+
+### 実際のAPIレスポンス例（Program 1）
 
 ```json
 {
+  "selectable_instructor_details": [
+    {
+      "type": "ALL",
+      "items": [],
+      "terms": []
+    }
+  ],
   "selectable_resource_details": [
     {
-      "type": "SELECTED",
+      "type": "RANDOM_SELECTED",
       "items": [
         {
-          "resource_id": 456,
-          "resource_code": "RES001",
-          "resource_name": "施術室A"
+          "priority": "1",
+          "resource_code": "RS0001",
+          "resource_id": 1,
+          "resource_name": "Booth 1"
         }
       ],
       "terms": [
         {
           "start_minutes": 0,
-          "end_minutes": 20
+          "end_minutes": 15
+        }
+      ]
+    },
+    {
+      "type": "RANDOM_SELECTED",
+      "items": [
+        {
+          "priority": "1",
+          "resource_code": "RS0002",
+          "resource_id": 2,
+          "resource_name": "Booth 2"
+        }
+      ],
+      "terms": [
+        {
+          "start_minutes": 15,
+          "end_minutes": 30
         }
       ]
     }
-  ]
+  ],
+  "service_minutes": 30
 }
 ```
 
-### type の意味（スタッフと同様）
+この例では30分コースで：
+- 0〜15分: Booth 1 を使用（`RANDOM_SELECTED`）
+- 15〜30分: Booth 2 を使用（`RANDOM_SELECTED`）
+
+### type の意味
 
 | type | 説明 | items の扱い |
 |------|------|-------------|
@@ -439,23 +471,19 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 
 ### terms（時間帯設定）
 
-対象設備を割り当てる時間帯を個別に指定する設定です。例えば「前半20分・後半40分」のように分割できます。
+対象設備を割り当てる時間帯を個別に指定する設定です。`selectable_resource_details` 配列の各要素が異なる時間帯を担当します。
 
-```json
-{
-  "selectable_resource_details": [
-    {
-      "type": "SELECTED",
-      "items": [{ "resource_id": 1, "resource_name": "設備A" }],
-      "terms": [{ "start_minutes": 0, "end_minutes": 20 }]
-    },
-    {
-      "type": "SELECTED",
-      "items": [{ "resource_id": 2, "resource_name": "設備B" }],
-      "terms": [{ "start_minutes": 20, "end_minutes": 60 }]
-    }
-  ]
-}
+```
+例: 30分コース
+├─ selectable_resource_details[0]
+│   ├─ type: "RANDOM_SELECTED"
+│   ├─ items: [Booth 1]
+│   └─ terms: [{ start: 0, end: 15 }]  ← 前半15分
+│
+└─ selectable_resource_details[1]
+    ├─ type: "RANDOM_SELECTED"
+    ├─ items: [Booth 2]
+    └─ terms: [{ start: 15, end: 30 }]  ← 後半15分
 ```
 
 上記の例では、60分コースで：

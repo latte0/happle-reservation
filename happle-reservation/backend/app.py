@@ -1121,7 +1121,16 @@ def get_program(program_id: int):
             "description": program.get("description"),
             "duration": program.get("duration"),
             "capacity": program.get("capacity"),
-            "price": program.get("price")
+            "price": program.get("price"),
+            "thumbnail": program.get("thumbnail_code"),
+            # 自由枠予約用の設定
+            "service_minutes": program.get("service_minutes"),
+            "max_service_minutes": program.get("max_service_minutes"),
+            "reservable_to_minutes": program.get("reservable_to_minutes"),
+            "before_interval_minutes": program.get("before_interval_minutes"),
+            "after_interval_minutes": program.get("after_interval_minutes"),
+            "selectable_instructor_details": program.get("selectable_instructor_details"),
+            "selectable_resource_details": program.get("selectable_resource_details"),
         }
     })
 
