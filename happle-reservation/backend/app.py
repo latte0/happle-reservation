@@ -585,7 +585,7 @@ def send_reservation_email(
 {detail_url}
 {line_section}
 【当日の注意事項について】
-・持病がある方に関しては施術によっては医師の同意書が必要になります。
+ ・持病がある方に関しては施術によっては医師の同意書が必要になります。
 ・妊娠中の方の施術はお断りさせていただいております。
 ・未成年の方は親権者同伴以外の場合、施術不可となります。
 ・生理中でも施術は可能です。
@@ -2197,9 +2197,14 @@ def create_choice_reservation():
             selectable_instructor_ids = None
             if selectable_instructor_details:
                 first_detail = selectable_instructor_details[0]
-                if first_detail.get("type") == "SPECIFIC":
-                    selectable_instructor_ids = set(first_detail.get("items", []))
-                    logger.info(f"Program {program_id} has specific selectable instructors: {selectable_instructor_ids}")
+                detail_type = first_detail.get("type")
+                # ALL, RANDOM_ALL の場合は全スタッフ選択可能
+                # SELECTED, FIXED, RANDOM_SELECTED の場合は指定されたスタッフのみ
+                if detail_type in ["SELECTED", "FIXED", "RANDOM_SELECTED"]:
+                    items = first_detail.get("items", [])
+                    # items は { instructor_id, instructor_code, ... } の配列
+                    selectable_instructor_ids = set(item.get("instructor_id") for item in items if item.get("instructor_id"))
+                    logger.info(f"Program {program_id} has selectable instructors (type={detail_type}): {selectable_instructor_ids}")
             
             # choice/scheduleから空いているスタッフを取得
             schedule_response = client.get_choice_schedule(studio_room_id, date_str)

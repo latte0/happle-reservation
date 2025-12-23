@@ -234,9 +234,11 @@ function FreeScheduleContent() {
     
     // 最初の設定を使用（通常は1つのみ）
     const detail = details[0]
-    if (detail.type === 'ALL') return true  // 全てから選択可能
-    if (detail.type === 'SPECIFIC') {
-      return detail.items.includes(instructorId)  // 指定されたスタッフのみ
+    if (detail.type === 'ALL' || detail.type === 'RANDOM_ALL') return true  // 全てから選択可能
+    if (detail.type === 'SELECTED' || detail.type === 'FIXED' || detail.type === 'RANDOM_SELECTED') {
+      // items配列からinstructor_idを抽出してチェック
+      const selectableIds = detail.items?.map(item => item.instructor_id) ?? []
+      return selectableIds.includes(instructorId)
     }
     return true
   }

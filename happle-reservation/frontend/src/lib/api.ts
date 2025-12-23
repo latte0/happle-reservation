@@ -58,15 +58,25 @@ export interface Studio {
 
 // 選択可能スタッフの時間帯設定
 export interface SelectableInstructorTerm {
-  timeperiod: string  // FULLTIME, MORNING, DAYTIME, EVENING, NIGHT
-  is_reservable: boolean
+  start_minutes: number
+  end_minutes: number
+}
+
+// 選択可能スタッフの候補
+export interface SelectableInstructorItem {
+  instructor_id: number
+  instructor_code: string
+  instructor_name: string
+  instructor_thumbnail_code?: string
+  priority?: number  // RANDOM_SELECTEDの場合のみ
 }
 
 // 選択可能スタッフ詳細
 export interface SelectableInstructorDetail {
-  type: 'ALL' | 'SPECIFIC'  // ALL: 全スタッフ, SPECIFIC: 特定スタッフのみ
-  items: number[]  // 選択可能なスタッフID（type=SPECIFICの場合）
-  terms: SelectableInstructorTerm[]  // 時間帯ごとの設定
+  type: 'ALL' | 'SELECTED' | 'FIXED' | 'RANDOM_ALL' | 'RANDOM_SELECTED'
+  is_selectable?: boolean  // RANDOM_ALL, RANDOM_SELECTEDの場合のみ
+  terms?: SelectableInstructorTerm[]  // 予約時間帯を指定する場合
+  items?: SelectableInstructorItem[]  // SELECTED, FIXED, RANDOM_SELECTEDの場合のみ
 }
 
 export interface Program {
@@ -90,9 +100,9 @@ export interface Program {
 /**
  * プログラムに選択可能なスタッフがいるかどうかをチェック
  * - selectable_instructor_details が未設定または空 → 全スタッフ選択可能 → true
- * - type === 'ALL' → 全スタッフ選択可能 → true
- * - type === 'SPECIFIC' かつ items.length > 0 → 特定のスタッフが選択可能 → true
- * - type === 'SPECIFIC' かつ items.length === 0 → スタッフなし → false
+ * - type === 'ALL' or 'RANDOM_ALL' → 全スタッフ選択可能 → true
+ * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' かつ items.length > 0 → 特定のスタッフが選択可能 → true
+ * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' かつ items.length === 0 → スタッフなし → false
  */
 export function hasSelectableInstructors(program: Program): boolean {
   const details = program.selectable_instructor_details
@@ -103,14 +113,14 @@ export function hasSelectableInstructors(program: Program): boolean {
   
   // 最初の設定を使用（通常は1つのみ）
   const detail = details[0]
-  if (detail.type === 'ALL') {
+  if (detail.type === 'ALL' || detail.type === 'RANDOM_ALL') {
     // 全スタッフ選択可能
     return true
   }
   
-  if (detail.type === 'SPECIFIC') {
-    // 特定スタッフのみ: itemsに1つ以上のスタッフIDがあれば選択可能
-    return detail.items.length > 0
+  if (detail.type === 'SELECTED' || detail.type === 'FIXED' || detail.type === 'RANDOM_SELECTED') {
+    // 特定スタッフのみ: itemsに1つ以上のスタッフがあれば選択可能
+    return (detail.items?.length ?? 0) > 0
   }
   
   return true
@@ -118,8 +128,8 @@ export function hasSelectableInstructors(program: Program): boolean {
 
 /**
  * プログラムの選択可能なスタッフIDの一覧を取得
- * - type === 'ALL' または未設定の場合は null（全スタッフ選択可能）
- * - type === 'SPECIFIC' の場合は選択可能なスタッフIDの配列
+ * - type === 'ALL' / 'RANDOM_ALL' または未設定の場合は null（全スタッフ選択可能）
+ * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' の場合は選択可能なスタッフIDの配列
  */
 export function getSelectableInstructorIds(program: Program): number[] | null {
   const details = program.selectable_instructor_details
@@ -128,11 +138,12 @@ export function getSelectableInstructorIds(program: Program): number[] | null {
   }
   
   const detail = details[0]
-  if (detail.type === 'ALL') {
+  if (detail.type === 'ALL' || detail.type === 'RANDOM_ALL') {
     return null  // 全スタッフ選択可能
   }
   
-  return detail.items  // 選択可能なスタッフIDの配列
+  // items配列からinstructor_idを抽出
+  return detail.items?.map(item => item.instructor_id) ?? []
 }
 
 export interface ScheduleSlot {
