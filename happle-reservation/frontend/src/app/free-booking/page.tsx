@@ -337,6 +337,18 @@ function FreeBookingContent() {
               <div className="text-accent-600 mt-1">
                 {selectedProgram?.service_minutes || selectedProgram?.duration || '?'}分
               </div>
+              {/* 設備情報 */}
+              {selectedProgram?.selectable_resource_details && 
+               selectedProgram.selectable_resource_details.length > 0 &&
+               selectedProgram.selectable_resource_details[0].type !== 'ALL' &&
+               selectedProgram.selectable_resource_details[0].type !== 'RANDOM_ALL' &&
+               selectedProgram.selectable_resource_details[0].items && 
+               selectedProgram.selectable_resource_details[0].items.length > 0 && (
+                <div className="mt-2 text-sm text-accent-500">
+                  <span className="font-medium">使用設備: </span>
+                  {selectedProgram.selectable_resource_details[0].items.map(item => item.resource_name).filter(Boolean).join(', ') || '自動選択'}
+                </div>
+              )}
             </div>
 
             <div className="border-t border-gray-100 pt-4">
@@ -407,12 +419,42 @@ function FreeBookingContent() {
         </div>
       ) : (
         // Input Form View
-        <form onSubmit={handleConfirm} className="card animate-fade-in">
-          <h2 className="font-display font-bold text-lg text-accent-800 mb-6">
-            お客様情報を入力してください
-          </h2>
-          
-          <div className="space-y-5">
+        <div className="animate-fade-in">
+          {/* 予約サマリー */}
+          <div className="card mb-6">
+            <div className="flex flex-wrap gap-4 text-sm">
+              <div className="flex-1 min-w-[140px]">
+                <span className="text-accent-500">日時</span>
+                <div className="font-bold text-accent-800">{formattedDate} {displayTimeStr}</div>
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <span className="text-accent-500">メニュー</span>
+                <div className="font-bold text-accent-800">{selectedProgram?.name}</div>
+                <div className="text-accent-600 text-xs">{selectedProgram?.service_minutes || selectedProgram?.duration || '?'}分</div>
+              </div>
+              {/* 設備情報 */}
+              {selectedProgram?.selectable_resource_details && 
+               selectedProgram.selectable_resource_details.length > 0 &&
+               selectedProgram.selectable_resource_details[0].type !== 'ALL' &&
+               selectedProgram.selectable_resource_details[0].type !== 'RANDOM_ALL' &&
+               selectedProgram.selectable_resource_details[0].items && 
+               selectedProgram.selectable_resource_details[0].items.length > 0 && (
+                <div className="flex-1 min-w-[140px]">
+                  <span className="text-accent-500">使用設備</span>
+                  <div className="font-medium text-accent-800">
+                    {selectedProgram.selectable_resource_details[0].items.map(item => item.resource_name).filter(Boolean).join(', ') || '自動選択'}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <form onSubmit={handleConfirm} className="card">
+            <h2 className="font-display font-bold text-lg text-accent-800 mb-6">
+              お客様情報を入力してください
+            </h2>
+            
+            <div className="space-y-5">
             {/* Name */}
             <div>
               <label htmlFor="name" className="label">
@@ -505,23 +547,24 @@ function FreeBookingContent() {
             </div>
           </div>
 
-          {/* Submit Button */}
-          <div className="mt-8 flex flex-col sm:flex-row gap-4">
-            <button
-              type="button"
-              onClick={() => router.back()}
-              className="w-full sm:w-1/3 btn-secondary order-2 sm:order-1"
-            >
-              戻る
-            </button>
-            <button
-              type="submit"
-              className="w-full sm:w-2/3 btn-primary flex items-center justify-center gap-2 order-1 sm:order-2"
-            >
-              確認画面へ進む
-            </button>
-          </div>
-        </form>
+            {/* Submit Button */}
+            <div className="mt-8 flex flex-col sm:flex-row gap-4">
+              <button
+                type="button"
+                onClick={() => router.back()}
+                className="w-full sm:w-1/3 btn-secondary order-2 sm:order-1"
+              >
+                戻る
+              </button>
+              <button
+                type="submit"
+                className="w-full sm:w-2/3 btn-primary flex items-center justify-center gap-2 order-1 sm:order-2"
+              >
+                確認画面へ進む
+              </button>
+            </div>
+          </form>
+        </div>
       )}
     </div>
   )
