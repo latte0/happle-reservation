@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect } from 'react'
+import { Suspense, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 
-export default function FreeSchedulePage() {
+function FreeScheduleRedirect() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -15,8 +15,15 @@ export default function FreeSchedulePage() {
     })
     const queryString = params.toString()
     router.replace(`/${queryString ? `?${queryString}` : ''}`)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router])
+  }, [router, searchParams])
 
   return null
+}
+
+export default function FreeSchedulePage() {
+  return (
+    <Suspense fallback={null}>
+      <FreeScheduleRedirect />
+    </Suspense>
+  )
 }

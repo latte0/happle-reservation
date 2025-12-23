@@ -1401,11 +1401,12 @@ def _parse_hacomono_error(error: HacomonoAPIError) -> dict:
 
 def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone: str, 
                          guest_name_kana: str = "", guest_note: str = "",
-                         gender: int = 1, birthday: str = "2000-01-01", studio_id: int = 2,
+                         gender: int = 2, birthday: str = "2000-01-01", studio_id: int = 2,
                          ticket_id: int = 5):
     """ゲストメンバーを作成（または既存メンバーを使用）し、チケットを付与
     
     Args:
+        gender: 性別（1: 男性, 2: 女性）デフォルト: 2（女性）
         ticket_id: 付与するチケットID（デフォルト: 5 = Web予約用チケット）
     """
     import secrets
@@ -1555,7 +1556,7 @@ def create_reservation():
             guest_phone=data["guest_phone"],
             guest_name_kana=data.get("guest_name_kana", ""),
             guest_note=data.get("guest_note", ""),
-            gender=data.get("gender", 1),
+            gender=data.get("gender", 2),  # デフォルト: 女性
             birthday=data.get("birthday", "2000-01-01"),
             studio_id=data.get("studio_id", 2),
             ticket_id=ticket_id_to_grant
@@ -2163,7 +2164,7 @@ def create_choice_reservation():
             "mail_address": guest_email,
             "tel": guest_phone,
             "plain_password": random_password,
-            "gender": data.get("gender", 1),
+            "gender": data.get("gender", 2),  # デフォルト: 女性
             "birthday": data.get("birthday", "2000-01-01"),
             "studio_id": data.get("studio_id", 2),
             "note": f"Web予約ゲスト（自由枠）: {guest_note}"
