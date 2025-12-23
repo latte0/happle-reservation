@@ -1097,6 +1097,7 @@ def get_programs():
             "reservable_to_minutes": program.get("reservable_to_minutes"),  # 予約締切（開始X分前まで）
             "before_interval_minutes": program.get("before_interval_minutes"),  # 開始前ブロック時間
             "after_interval_minutes": program.get("after_interval_minutes"),  # 終了後ブロック時間
+            "max_reservable_num_at_day": program.get("max_reservable_num_at_day"),  # 1日の予約上限数
             "selectable_instructor_details": program.get("selectable_instructor_details"),  # 選択可能スタッフ詳細
             "selectable_resource_details": program.get("selectable_resource_details"),  # 選択可能設備詳細
         })
@@ -1129,6 +1130,7 @@ def get_program(program_id: int):
             "reservable_to_minutes": program.get("reservable_to_minutes"),
             "before_interval_minutes": program.get("before_interval_minutes"),
             "after_interval_minutes": program.get("after_interval_minutes"),
+            "max_reservable_num_at_day": program.get("max_reservable_num_at_day"),  # 1日の予約上限数
             "selectable_instructor_details": program.get("selectable_instructor_details"),
             "selectable_resource_details": program.get("selectable_resource_details"),
         }
@@ -2742,6 +2744,7 @@ def get_choice_schedule():
     
     studio_room_id = request.args.get("studio_room_id", type=int)
     studio_id = request.args.get("studio_id", type=int)
+    program_id = request.args.get("program_id", type=int)  # プログラムID（1日上限チェック用）
     date = request.args.get("date")  # YYYY-MM-DD
     
     if not studio_room_id:
@@ -2888,6 +2891,25 @@ def get_choice_schedule():
         # 設備情報を取得（同時予約可能数を含む）
         resources_info = get_cached_resources(client, actual_studio_id)
         
+        # プログラムの1日の予約数を取得
+        program_reservation_count = 0
+        if program_id:
+            try:
+                # その日のそのプログラムの予約を取得
+                reservations_response = client.get_reservations({
+                    "program_id": program_id,
+                    "date_from": date,
+                    "date_to": date
+                })
+                reservations_data = reservations_response.get("data", {}).get("reservations", {})
+                if isinstance(reservations_data, dict):
+                    program_reservation_count = len(reservations_data.get("list", []))
+                else:
+                    program_reservation_count = len(reservations_data) if reservations_data else 0
+                logger.info(f"Program {program_id} has {program_reservation_count} reservations on {date}")
+            except Exception as e:
+                logger.warning(f"Failed to get program reservations count: {e}")
+        
         return jsonify({
             "schedule": {
                 "date": date,
@@ -2905,7 +2927,8 @@ def get_choice_schedule():
                     "after_minutes": FIXED_SLOT_AFTER_INTERVAL_MINUTES
                 },
                 "instructor_studio_map": instructor_studio_map,  # スタッフのスタジオ紐付け
-                "shift_slots": shift_slots  # 予定ブロック（休憩ブロック）
+                "shift_slots": shift_slots,  # 予定ブロック（休憩ブロック）
+                "program_reservation_count": program_reservation_count  # その日のプログラム予約数
             }
         })
     except HacomonoAPIError as e:
@@ -2924,6 +2947,7 @@ def get_choice_schedule_range():
     client = get_hacomono_client()
     
     studio_room_id = request.args.get("studio_room_id", type=int)
+    program_id = request.args.get("program_id", type=int)  # プログラムID（1日上限チェック用）
     date_from = request.args.get("date_from")  # YYYY-MM-DD
     date_to = request.args.get("date_to")  # YYYY-MM-DD
     
@@ -2969,7 +2993,8 @@ def get_choice_schedule_range():
                     "shift": schedule.get("shift"),
                     "shift_studio_business_hour": schedule.get("shift_studio_business_hour", []),
                     "shift_instructor": schedule.get("shift_instructor", []),
-                    "reservation_assign_instructor": list(schedule.get("reservation_assign_instructor", []))
+                    "reservation_assign_instructor": list(schedule.get("reservation_assign_instructor", [])),
+                    "reservation_assign_resource": list(schedule.get("reservation_assign_resource", []))  # 設備の予約情報を追加
                 }
             except Exception as e:
                 logger.warning(f"Failed to get schedule for {date}: {e}")
@@ -3083,7 +3108,31 @@ def get_choice_schedule_range():
         # 5. 設備情報を取得（同時予約可能数を含む）
         resources_info = get_cached_resources(client, actual_studio_id)
         
-        # 6. 結果を統合
+        # 6. プログラムの予約数を日付範囲全体で取得
+        program_reservation_counts = {date: 0 for date in dates}
+        if program_id:
+            try:
+                reservations_response = client.get_reservations({
+                    "program_id": program_id,
+                    "date_from": date_from,
+                    "date_to": date_to
+                })
+                reservations_data = reservations_response.get("data", {}).get("reservations", {})
+                reservations_list = reservations_data.get("list", []) if isinstance(reservations_data, dict) else reservations_data or []
+                
+                # 日付ごとに集計
+                for reservation in reservations_list:
+                    start_at = reservation.get("start_at", "")
+                    if start_at:
+                        res_date = start_at[:10]  # YYYY-MM-DD
+                        if res_date in program_reservation_counts:
+                            program_reservation_counts[res_date] += 1
+                
+                logger.info(f"Program {program_id} reservations: {program_reservation_counts}")
+            except Exception as e:
+                logger.warning(f"Failed to get program reservations: {e}")
+        
+        # 7. 結果を統合
         result_schedules = {}
         for date in dates:
             schedule = schedules.get(date)
@@ -3113,7 +3162,8 @@ def get_choice_schedule_range():
                         "after_minutes": FIXED_SLOT_AFTER_INTERVAL_MINUTES
                     },
                     "instructor_studio_map": instructor_studio_map,
-                    "shift_slots": shift_slots_by_date.get(date, [])
+                    "shift_slots": shift_slots_by_date.get(date, []),
+                    "program_reservation_count": program_reservation_counts.get(date, 0)  # その日のプログラム予約数
                 }
             else:
                 result_schedules[date] = None

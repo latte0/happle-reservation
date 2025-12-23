@@ -19,6 +19,7 @@ type UnavailableReason =
   | 'interval_blocked'    // インターバルでブロック中
   | 'no_selectable_staff' // 選択可能なスタッフがいない
   | 'no_available_resource' // 利用可能な設備がない
+  | 'daily_limit_reached' // 1日の予約上限に達している
 
 interface GridSlot {
   date: Date
@@ -184,7 +185,8 @@ function FreeScheduleContent() {
         setScheduleLoading(true)
         
         // 1回のAPIコールで7日分のスケジュールを取得（最適化）
-        const newScheduleMap = await getChoiceScheduleRange(studioRoomId!, dateFrom, dateTo)
+        // program_idを渡して1日あたりの予約数も取得
+        const newScheduleMap = await getChoiceScheduleRange(studioRoomId!, dateFrom, dateTo, selectedProgram!.id)
         
         // このリクエストが最新でなければ、状態を更新しない
         if (thisRequestId !== latestRequestIdRef.current) {
@@ -342,8 +344,10 @@ function FreeScheduleContent() {
       const selectableIds = detail.items?.map(item => item.resource_id).filter((id): id is number => !!id) ?? []
       if (selectableIds.length === 0) return false  // 設備が必要だが選択可能なものがない
       
-      // terms がある場合、その時間帯でチェック。なければコース全体
-      const terms = detail.terms || [{ start_minutes: 0, end_minutes: serviceMinutes }]
+      // terms がある場合、その時間帯でチェック。なければ（空配列含む）コース全体
+      const terms = (detail.terms && detail.terms.length > 0) 
+        ? detail.terms 
+        : [{ start_minutes: 0, end_minutes: serviceMinutes }]
       
       // この detail の全ての terms について、いずれかの設備が空いているかチェック
       for (let termIdx = 0; termIdx < terms.length; termIdx++) {
@@ -451,6 +455,13 @@ function FreeScheduleContent() {
         // コース終了時刻を計算（表示間隔ではなく、コースの所要時間を使用）
         const cellEndTime = new Date(cellTime.getTime() + serviceMinutes * 60000)
         
+        // 1日の予約上限チェック
+        // hacomonoでは 0 = 「0件まで予約可能」（つまり予約不可）、null = 上限なし
+        const maxReservableNumAtDay = selectedProgram?.max_reservable_num_at_day
+        const programReservationCount = schedule?.program_reservation_count ?? 0
+        // maxReservableNumAtDay が 0 の場合も予約不可（hacomonoの仕様）
+        const isDailyLimitReached = maxReservableNumAtDay !== null && maxReservableNumAtDay !== undefined && programReservationCount >= maxReservableNumAtDay
+        
         // 時間範囲チェックを先に行う
         if (cellTime < minTime) {
           unavailableReason = 'too_soon'
@@ -459,6 +470,9 @@ function FreeScheduleContent() {
         } else if (now > deadlineTime) {
           // 予約締切を過ぎている
           unavailableReason = 'deadline_passed'
+        } else if (isDailyLimitReached) {
+          // 1日の予約上限に達している
+          unavailableReason = 'daily_limit_reached'
         } else if (schedule) {
           const businessHour = schedule.shift_studio_business_hour?.find(
             bh => !bh.is_holiday && isSameDay(parseISO(bh.date), date)
@@ -896,6 +910,11 @@ function FreeScheduleContent() {
                                             content = <span className="text-orange-400 text-xl">×</span>
                                             cellClass = "bg-orange-50/50"
                                             tooltip = "設備が使用中です"
+                                            break
+                                        case 'daily_limit_reached':
+                                            content = <span className="text-rose-400 text-xl">×</span>
+                                            cellClass = "bg-rose-50/50"
+                                            tooltip = "1日の予約上限に達しています"
                                             break
                                         default:
                                             tooltip = "予約不可"

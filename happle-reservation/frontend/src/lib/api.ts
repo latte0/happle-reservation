@@ -115,6 +115,7 @@ export interface Program {
   reservable_to_minutes?: number | null  // 予約締切（開始X分前まで）
   before_interval_minutes?: number | null  // 開始前ブロック時間
   after_interval_minutes?: number | null  // 終了後ブロック時間
+  max_reservable_num_at_day?: number | null  // 1日の予約上限数
   selectable_instructor_details?: SelectableInstructorDetail[]  // 選択可能スタッフ詳細
   selectable_resource_details?: SelectableResourceDetail[]  // 選択可能設備詳細
 }
@@ -408,6 +409,8 @@ export interface ChoiceSchedule {
     max_cc_reservable_num: number  // 同時予約可能数
     max_reservable_num_at_day?: number
   }>
+  // その日のプログラム予約数
+  program_reservation_count?: number
 }
 
 export interface AvailableInstructor {
@@ -573,11 +576,14 @@ export async function getStudioRooms(studioId?: number): Promise<StudioRoom[]> {
 
 export async function getChoiceSchedule(
   studioRoomId: number,
-  date: string
+  date: string,
+  programId?: number
 ): Promise<ChoiceSchedule | null> {
-  const response = await fetchApi<{ schedule: ChoiceSchedule }>(
-    `/api/choice-schedule?studio_room_id=${studioRoomId}&date=${date}`
-  )
+  let url = `/api/choice-schedule?studio_room_id=${studioRoomId}&date=${date}`
+  if (programId) {
+    url += `&program_id=${programId}`
+  }
+  const response = await fetchApi<{ schedule: ChoiceSchedule }>(url)
   return response.data?.schedule || null
 }
 
@@ -588,15 +594,18 @@ export async function getChoiceSchedule(
 export async function getChoiceScheduleRange(
   studioRoomId: number,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  programId?: number
 ): Promise<Map<string, ChoiceSchedule | null>> {
+  let url = `/api/choice-schedule-range?studio_room_id=${studioRoomId}&date_from=${dateFrom}&date_to=${dateTo}`
+  if (programId) {
+    url += `&program_id=${programId}`
+  }
   const response = await fetchApi<{ 
     schedules: { [key: string]: ChoiceSchedule | null }
     date_from: string
     date_to: string
-  }>(
-    `/api/choice-schedule-range?studio_room_id=${studioRoomId}&date_from=${dateFrom}&date_to=${dateTo}`
-  )
+  }>(url)
   
   const result = new Map<string, ChoiceSchedule | null>()
   if (response.data?.schedules) {

@@ -74,6 +74,19 @@ isProgramFullyConfigured(program): boolean
 | 予約締切時間（開始X分前まで） | ✅ | ❌（APIに任せる） | ⚠️ |
 | 営業時間内か | ✅ | ❌（APIに任せる） | ⚠️ |
 
+### プログラムに関する制約
+
+| 制約項目 | 予約選択画面（FE） | 予約実行時（BE） | 一致 |
+|---------|-------------------|-----------------|------|
+| 1日の予約上限（max_reservable_num_at_day） | ✅ | ❌（APIに任せる） | ⚠️ |
+
+> **1日の予約上限**: `program.max_reservable_num_at_day` で設定。
+> - `null`/未設定 = 上限なし
+> - `0` = 0件まで（**予約不可**）
+> - `N` = 1日N件まで
+>
+> その日のプログラム予約数がこの値に達している場合、その日の全時間帯が予約不可となります。
+
 ### スタッフに関する制約
 
 | 制約項目 | 予約選択画面（FE） | 予約実行時（BE） | 一致 |
@@ -168,7 +181,8 @@ isProgramFullyConfigured(program): boolean
     start_at: string,
     end_at: string,
     reservation_type?: string // CHOICE, SHIFT_SLOT
-  }]
+  }],
+  program_reservation_count: number  // その日のプログラム予約数（1日上限チェック用）
 }
 ```
 
@@ -194,7 +208,8 @@ isProgramFullyConfigured(program): boolean
   service_minutes: number,           // コースの所要時間
   before_interval_minutes: number,   // 開始前ブロック時間
   after_interval_minutes: number,    // 終了後ブロック時間
-  reservable_to_minutes: number      // 予約締切（開始X分前まで）
+  reservable_to_minutes: number,     // 予約締切（開始X分前まで）
+  max_reservable_num_at_day: number  // 1日の予約上限（0 = 上限なし）
 }
 ```
 
