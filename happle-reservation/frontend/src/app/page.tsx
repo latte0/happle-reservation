@@ -284,25 +284,11 @@ function FreeScheduleContent() {
     })
   }
 
-  // 設備が選択可能か取得するヘルパー関数
-  const getSelectableResourceIds = (): Set<number> | null => {
-    const details = selectedProgram?.selectable_resource_details
-    if (!details || details.length === 0) return null  // 設備不要
-    
-    const detail = details[0]
-    if (detail.type === 'ALL' || detail.type === 'RANDOM_ALL') return null  // 全設備から選択可能 = チェック不要
-    if (detail.type === 'SELECTED' || detail.type === 'FIXED' || detail.type === 'RANDOM_SELECTED') {
-      const selectableIds = detail.items?.map(item => item.resource_id).filter((id): id is number => !!id) ?? []
-      return new Set(selectableIds)
-    }
-    return null
-  }
-
   // 設備の予約数と完全ブロック状態をカウント
   const getResourceAvailability = (
     resourceId: number,
-    cellTime: Date,
-    cellEndTime: Date,
+    checkStartTime: Date,
+    checkEndTime: Date,
     reservedResources: Array<{ entity_id: number; start_at: string; end_at: string; reservation_type?: string }>
   ): { reservationCount: number; isBlocked: boolean } => {
     let reservationCount = 0
@@ -315,7 +301,7 @@ function FreeScheduleContent() {
       const resEnd = parseISO(res.end_at)
       
       // 時間が重複するか
-      if (cellTime < resEnd && cellEndTime > resStart) {
+      if (checkStartTime < resEnd && checkEndTime > resStart) {
         // 予定ブロック（SHIFT_SLOT）の場合は完全ブロック
         const reservationType = (res.reservation_type || '').toUpperCase()
         if (['BREAK', 'BLOCK', 'REST', 'SHIFT_SLOT'].includes(reservationType)) {
@@ -330,47 +316,75 @@ function FreeScheduleContent() {
     return { reservationCount, isBlocked }
   }
 
-  // 指定時間帯に利用可能な設備があるかチェック（同時予約可能数を考慮）
+  // 指定時間帯に利用可能な設備があるかチェック（terms を考慮）
+  // terms: 時間帯ごとに異なる設備を使用する設定
+  // 例: 60分コースで前半20分は設備A、後半40分は設備Bを使用する場合
   const hasAvailableResource = (
     cellTime: Date,
     cellEndTime: Date,
     schedule: ChoiceSchedule | null
   ): boolean => {
-    const selectableResourceIds = getSelectableResourceIds()
-    if (!selectableResourceIds) return true  // 設備不要なプログラム
-    
-    if (selectableResourceIds.size === 0) return false  // 設備が必要だが選択可能なものがない
+    const details = selectedProgram?.selectable_resource_details
+    if (!details || details.length === 0) return true  // 設備不要なプログラム
     
     const reservedResources = schedule?.reservation_assign_resource || []
     const resourcesInfo = schedule?.resources_info || {}
+    const serviceMinutes = selectedProgram?.service_minutes || selectedProgram?.duration || 60
     
-    // 選択可能な設備の中で、空きがあるものがあるか
-    const resourceIdArray = Array.from(selectableResourceIds)
-    for (let i = 0; i < resourceIdArray.length; i++) {
-      const resourceId = resourceIdArray[i]
+    // 各 selectable_resource_details 要素について、その時間帯で設備が空いているかチェック
+    for (let detailIdx = 0; detailIdx < details.length; detailIdx++) {
+      const detail = details[detailIdx]
       
-      // 設備がこの店舗に紐づいているかチェック
-      // resourcesInfo に含まれていない設備は、この店舗の設備ではないのでスキップ
-      const resourceInfo = resourcesInfo[String(resourceId)]
-      if (!resourceInfo) continue
+      // ALL, RANDOM_ALL の場合は設備チェック不要
+      if (detail.type === 'ALL' || detail.type === 'RANDOM_ALL') continue
       
-      const { reservationCount, isBlocked } = getResourceAvailability(
-        resourceId, cellTime, cellEndTime, reservedResources
-      )
+      // 選択可能設備IDを取得
+      const selectableIds = detail.items?.map(item => item.resource_id).filter((id): id is number => !!id) ?? []
+      if (selectableIds.length === 0) return false  // 設備が必要だが選択可能なものがない
       
-      // 予定ブロックで完全ブロックされている場合はスキップ
-      if (isBlocked) continue
+      // terms がある場合、その時間帯でチェック。なければコース全体
+      const terms = detail.terms || [{ start_minutes: 0, end_minutes: serviceMinutes }]
       
-      // 同時予約可能数を取得（デフォルト1）
-      const maxReservableNum = resourceInfo.max_cc_reservable_num || 1
-      
-      // 予約数が同時予約可能数未満なら利用可能
-      if (reservationCount < maxReservableNum) {
-        return true
+      // この detail の全ての terms について、いずれかの設備が空いているかチェック
+      for (let termIdx = 0; termIdx < terms.length; termIdx++) {
+        const term = terms[termIdx]
+        const termStartTime = new Date(cellTime.getTime() + term.start_minutes * 60 * 1000)
+        const termEndTime = new Date(cellTime.getTime() + term.end_minutes * 60 * 1000)
+        
+        // この term の時間帯で空いている設備を探す
+        let hasAvailableInTerm = false
+        
+        for (let i = 0; i < selectableIds.length; i++) {
+          const resourceId = selectableIds[i]
+          
+          // 設備がこの店舗に紐づいているかチェック
+          const resourceInfo = resourcesInfo[String(resourceId)]
+          if (!resourceInfo) continue
+          
+          const { reservationCount, isBlocked } = getResourceAvailability(
+            resourceId, termStartTime, termEndTime, reservedResources
+          )
+          
+          // 予定ブロックで完全ブロックされている場合はスキップ
+          if (isBlocked) continue
+          
+          // 同時予約可能数を取得（デフォルト1）
+          const maxReservableNum = resourceInfo.max_cc_reservable_num || 1
+          
+          // 予約数が同時予約可能数未満なら利用可能
+          if (reservationCount < maxReservableNum) {
+            hasAvailableInTerm = true
+            break
+          }
+        }
+        
+        // この term で空いている設備がなければ、予約不可
+        if (!hasAvailableInTerm) return false
       }
     }
     
-    return false  // 全ての設備が満員または完全ブロック
+    // 全ての detail/term で空きがあれば予約可能
+    return true
   }
 
   // Grid Generation Logic (Same as before)

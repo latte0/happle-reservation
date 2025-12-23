@@ -352,6 +352,12 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
           "resource_code": "RES001",
           "resource_name": "施術室A"
         }
+      ],
+      "terms": [
+        {
+          "start_minutes": 0,
+          "end_minutes": 20
+        }
       ]
     }
   ]
@@ -367,6 +373,45 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 | `FIXED` | 固定設備 | items の設備に固定 |
 | `RANDOM_ALL` | 全設備から1つを自動選択 | 無視 |
 | `RANDOM_SELECTED` | 選択候補から1つを自動選択 | items の設備から選択 |
+
+### terms（時間帯設定）
+
+対象設備を割り当てる時間帯を個別に指定する設定です。例えば「前半20分・後半40分」のように分割できます。
+
+```json
+{
+  "selectable_resource_details": [
+    {
+      "type": "SELECTED",
+      "items": [{ "resource_id": 1, "resource_name": "設備A" }],
+      "terms": [{ "start_minutes": 0, "end_minutes": 20 }]
+    },
+    {
+      "type": "SELECTED",
+      "items": [{ "resource_id": 2, "resource_name": "設備B" }],
+      "terms": [{ "start_minutes": 20, "end_minutes": 60 }]
+    }
+  ]
+}
+```
+
+上記の例では、60分コースで：
+- 0〜20分: 設備A を使用
+- 20〜60分: 設備B を使用
+
+**予約可能判定のロジック**:
+1. `selectable_resource_details` の各要素について
+2. その要素の `terms` で指定された時間帯（start_minutes 〜 end_minutes）を計算
+3. その時間帯で、その要素の `items` に含まれる設備のいずれかが空いているかチェック
+4. 全ての要素/時間帯で空きがあれば予約可能
+
+> **Note**: `terms` が未設定の場合は、コース全体（0 〜 service_minutes）として扱います。
+
+### 設備の割り当てについて
+
+設備の割り当て（resource_id_set）は **hacomono が自動で行います**。
+フロントエンドやバックエンドで設備を指定する必要はありません。
+terms の設定も hacomono が自動で考慮します。
 
 ### 設備のマスター情報（API: `/master/resources`）
 
@@ -429,20 +474,19 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 
 ### 設備制約の動作
 
-1. **フロントエンド**:
+1. **フロントエンド（カレンダー表示時）**:
    - プログラムの `selectable_resource_details.type` が `SELECTED`, `FIXED`, `RANDOM_SELECTED` の場合のみ設備チェックを実行
+   - **terms（時間帯設定）を考慮**して各時間帯で設備が空いているかチェック
    - `reservation_assign_resource` で既存予約との重複を確認
    - `resources_info.max_cc_reservable_num`（同時予約可能数）を考慮して空き判定
+   - 設備がこの店舗に紐づいているかチェック（`resources_info` に存在するか）
    - 予定ブロック（SHIFT_SLOT）は完全ブロックとして扱う
    - スタッフが空いていても設備が全て満員なら「×（設備使用中）」と表示
 
-2. **バックエンド**:
-   - 予約作成時に設備の空き状況をチェック
-   - 設備の `max_cc_reservable_num`（同時予約可能数）を取得してキャッシュ（店舗ごと、5分間）
-   - 設備がその店舗に紐づいているかチェック（`resources_info` に存在するか）
-   - 同時間帯の予約数をカウントし、`max_cc_reservable_num` 未満なら予約可能
-   - 空いている設備があれば `resource_id_set` パラメータに設定して予約
-   - 設備がない場合はエラー「この時間帯に利用可能な設備がありません」を返す
+2. **バックエンド（予約作成時）**:
+   - **設備のチェックは行わない**（hacomono が自動で割り当てる）
+   - terms（時間帯設定）も hacomono が自動で処理
+   - `resource_id_set` パラメータは設定しない
 
 ---
 
@@ -469,7 +513,9 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 |-------------|---------------|------|
 | `DATETIME_OUT_OF_RANGE` | 400 | 予約日時が有効範囲外 |
 | `NO_AVAILABLE_INSTRUCTOR` | 400 | 対応可能なスタッフがいない |
-| `NO_AVAILABLE_RESOURCE` | 400 | 利用可能な設備がない |
 | `INSTRUCTOR_FETCH_ERROR` | 400 | スタッフ情報の取得に失敗 |
 | `CMN_000022` | 400 | メールアドレスが既に使用されている（hacomono API）|
+
+> **Note**: 設備のエラー（`NO_AVAILABLE_RESOURCE`）はバックエンドでは返しません。
+> 設備の割り当ては hacomono が自動で行うため、設備が足りない場合は hacomono API がエラーを返します。
 

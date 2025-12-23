@@ -86,10 +86,17 @@ export interface SelectableResourceItem {
   resource_name?: string
 }
 
+// 時間帯設定（設備・スタッフの使用時間帯を分で指定）
+export interface ResourceTerm {
+  start_minutes: number  // 開始時間（分）- コース開始からの経過時間
+  end_minutes: number    // 終了時間（分）- コース開始からの経過時間
+}
+
 // 選択可能設備詳細
 export interface SelectableResourceDetail {
   type: 'ALL' | 'SELECTED' | 'FIXED' | 'RANDOM_ALL' | 'RANDOM_SELECTED'
   items?: SelectableResourceItem[]
+  terms?: ResourceTerm[]  // 時間帯設定（例: 前半20分・後半40分など）
 }
 
 export interface Program {

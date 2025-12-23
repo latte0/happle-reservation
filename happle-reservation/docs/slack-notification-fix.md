@@ -67,3 +67,4 @@ payload = {
 - `SLACK_WEBHOOK_URL` が設定されていない場合、警告ログが出力され、通知はスキップされます
 - Webhook URLが無効な場合、HTTPエラーがログに記録されます
 
+

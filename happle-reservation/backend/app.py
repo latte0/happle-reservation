@@ -2475,111 +2475,8 @@ def create_choice_reservation():
                     "error_code": "NO_AVAILABLE_INSTRUCTOR"
                 }), 400
             
-            # 5. 設備の空き状況をチェック
-            selectable_resource_details = program.get("selectable_resource_details", [])
-            resource_id_to_use = None
-            
-            if selectable_resource_details:
-                first_resource_detail = selectable_resource_details[0]
-                resource_type = first_resource_detail.get("type")
-                
-                # 選択可能設備IDを取得（None = 全設備選択可能）
-                selectable_resource_ids = None
-                if resource_type in ["SELECTED", "FIXED", "RANDOM_SELECTED"]:
-                    items = first_resource_detail.get("items", [])
-                    selectable_resource_ids = set(item.get("resource_id") for item in items if item.get("resource_id"))
-                    logger.info(f"Program {program_id} has selectable resources (type={resource_type}): {selectable_resource_ids}")
-                
-                # 設備の既存予約を取得（hacomono APIから）
-                reserved_resources = list(schedule.get("reservation_assign_resource", []))
-                reserved_resources.extend(resource_blocks)  # 設備の予定ブロックも追加
-                
-                # 設備情報（同時予約可能数）を取得
-                resources_info = get_cached_resources(client, studio_id)
-                
-                # 各設備ごとの予約数と完全ブロックをカウント
-                resource_reservation_count = {}  # {resource_id: count}
-                resource_is_blocked = {}  # {resource_id: True/False} - 予定ブロックで完全にブロックされているか
-                
-                for reserved in reserved_resources:
-                    try:
-                        reserved_start_str = reserved.get("start_at", "")
-                        reserved_end_str = reserved.get("end_at", "")
-                        if not reserved_start_str or not reserved_end_str:
-                            continue
-                        reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
-                        reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
-                        
-                        # 予約したい時間帯がブロック範囲と重複するかチェック
-                        if start_datetime < reserved_end and proposed_end > reserved_start:
-                            resource_id = reserved.get("entity_id")
-                            
-                            # 設備の予定ブロック（SHIFT_SLOT）の場合は完全ブロック
-                            reservation_type = reserved.get("reservation_type", "").upper()
-                            is_block = reservation_type in ["BREAK", "BLOCK", "REST", "SHIFT_SLOT"]
-                            
-                            if is_block:
-                                resource_is_blocked[resource_id] = True
-                            else:
-                                # 通常の予約はカウントを増やす
-                                resource_reservation_count[resource_id] = resource_reservation_count.get(resource_id, 0) + 1
-                    except Exception as e:
-                        logger.warning(f"Failed to parse reserved resource time: {e}")
-                        continue
-                
-                # 空いている設備を抽出（同時予約可能数と店舗紐付けを考慮）
-                available_resources = []
-                if selectable_resource_ids:
-                    for resource_id in selectable_resource_ids:
-                        # 設備がこの店舗に紐づいているかチェック
-                        # resources_info に含まれていない設備は、この店舗の設備ではないのでスキップ
-                        resource_info = resources_info.get(resource_id, {})
-                        if not resource_info:
-                            logger.debug(f"Resource {resource_id} not found in studio {studio_id}, skipping")
-                            continue
-                        
-                        # 予定ブロックで完全ブロックされている場合はスキップ
-                        if resource_is_blocked.get(resource_id, False):
-                            logger.debug(f"Resource {resource_id} is blocked by SHIFT_SLOT")
-                            continue
-                        
-                        # 同時予約可能数を取得（デフォルト1）
-                        max_cc_reservable_num = resource_info.get("max_cc_reservable_num", 1)
-                        current_count = resource_reservation_count.get(resource_id, 0)
-                        
-                        if current_count < max_cc_reservable_num:
-                            available_resources.append(resource_id)
-                            logger.debug(f"Resource {resource_id} is available: {current_count}/{max_cc_reservable_num}")
-                        else:
-                            logger.debug(f"Resource {resource_id} is fully booked: {current_count}/{max_cc_reservable_num}")
-                else:
-                    # ALL, RANDOM_ALL の場合は設備チェックなし
-                    logger.info(f"Program {program_id} allows all resources, skipping resource availability check")
-                
-                if selectable_resource_ids:  # 設備が必要なプログラムの場合
-                    if available_resources:
-                        resource_id_to_use = available_resources[0]  # 最初の1つを使用
-                        logger.info(f"Found available resources: {available_resources}, using: {resource_id_to_use}")
-                    else:
-                        # 空いている設備が見つからない場合はエラー
-                        logger.error(f"No available resources found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
-                        
-                        # Slack通知（エラー）
-                        send_slack_notification(
-                            status="error",
-                            guest_name=guest_name,
-                            guest_email=guest_email,
-                            guest_phone=guest_phone,
-                            studio_name="",
-                            error_message="この時間帯に利用可能な設備がありません。別の時間帯をお選びください。",
-                            error_code="NO_AVAILABLE_RESOURCE"
-                        )
-                        
-                        return jsonify({
-                            "error": "予約の作成に失敗しました",
-                            "message": "この時間帯に利用可能な設備がありません。別の時間帯をお選びください。",
-                            "error_code": "NO_AVAILABLE_RESOURCE"
-                }), 400
+            # 設備の割り当てはhacomonoが自動で行うため、ここでのチェックは不要
+            # terms（時間帯設定）がある場合も、hacomonoが適切に処理する
         except Exception as e:
             logger.warning(f"Failed to get available instructors: {e}")
             
@@ -2610,12 +2507,7 @@ def create_choice_reservation():
     }
     
     # オプションパラメータ
-    # 設備IDを設定（バックエンドで選んだ場合 or フロントエンドから指定された場合）
-    if data.get("resource_id_set"):
-        reservation_data["resource_id_set"] = data["resource_id_set"]
-    elif 'resource_id_to_use' in dir() and resource_id_to_use:
-        reservation_data["resource_id_set"] = [resource_id_to_use]
-        logger.info(f"Setting resource_id_set from backend selection: {resource_id_to_use}")
+    # 設備の割り当てはhacomonoが自動で行う（terms設定も自動で考慮される）
     if data.get("reservation_note"):
         reservation_data["reservation_note"] = data["reservation_note"]
     if data.get("is_send_mail") is not None:
