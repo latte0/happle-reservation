@@ -1644,22 +1644,35 @@ def create_reservation():
             for key in ticket_related_keys:
                 logger.info(f"  {key}: {program.get(key)}")
             
-            # プログラムに紐づくチケットIDを取得（複数のフィールドを確認）
-            # hacomonoでは「予約可能なチケット」は consumable_ticket_ids または reservable_ticket_ids に格納される
-            program_ticket_ids = (
-                program.get("consumable_ticket_ids") or 
-                program.get("ticket_ids") or 
-                program.get("reservable_ticket_ids") or
-                program.get("limit_ticket_ids") or
-                []
-            )
-            logger.info(f"Fixed slot program {lesson_program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}, reservable_ticket_ids={program.get('reservable_ticket_ids')}")
+            # チケット制限の確認（hacomonoの正式フィールド）
+            is_ticket_reserve_limit = program.get("is_ticket_reserve_limit", False)
+            ticket_reserve_limit_details = program.get("ticket_reserve_limit_details", [])
             
-            if program_ticket_ids and len(program_ticket_ids) > 0:
-                ticket_id_to_grant = program_ticket_ids[0]
-                logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
+            logger.info(f"Program {lesson_program_id} ticket restriction: is_ticket_reserve_limit={is_ticket_reserve_limit}, ticket_reserve_limit_details={ticket_reserve_limit_details}")
+            
+            # チケット制限がある場合、制限されたチケットIDを使用
+            if is_ticket_reserve_limit and ticket_reserve_limit_details:
+                # ticket_reserve_limit_details から ticket_id を抽出
+                # 形式: [{"ticket_id": 1, ...}, {"ticket_id": 2, ...}] または [{"id": 1}, ...]
+                for detail in ticket_reserve_limit_details:
+                    tid = detail.get("ticket_id") or detail.get("id")
+                    if tid:
+                        ticket_id_to_grant = tid
+                        logger.info(f"Using ticket from ticket_reserve_limit_details: {ticket_id_to_grant}")
+                        break
             else:
-                logger.info(f"No program-linked ticket found, using default: {ticket_id_to_grant}")
+                # 後方互換: 他のフィールドも確認
+                program_ticket_ids = (
+                    program.get("consumable_ticket_ids") or 
+                    program.get("ticket_ids") or 
+                    program.get("reservable_ticket_ids") or
+                    []
+                )
+                if program_ticket_ids and len(program_ticket_ids) > 0:
+                    ticket_id_to_grant = program_ticket_ids[0]
+                    logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
+                else:
+                    logger.info(f"No program-linked ticket found, using default: {ticket_id_to_grant}")
         except Exception as e:
             logger.warning(f"Failed to get program info for ticket: {e}")
     
@@ -2337,29 +2350,38 @@ def create_choice_reservation():
     for key in ticket_related_keys:
         logger.info(f"  {key}: {program.get(key)}")
     
-    # プログラムに紐づくチケットIDを取得（複数のフィールドを確認）
-    # hacomonoでは「予約可能なチケット」は consumable_ticket_ids または reservable_ticket_ids に格納される
-    program_ticket_ids = (
-        program.get("consumable_ticket_ids") or 
-        program.get("ticket_ids") or 
-        program.get("reservable_ticket_ids") or
-        program.get("limit_ticket_ids") or
-        []
-    )
+    # チケット制限の確認（hacomonoの正式フィールド）
+    is_ticket_reserve_limit = program.get("is_ticket_reserve_limit", False)
+    ticket_reserve_limit_details = program.get("ticket_reserve_limit_details", [])
     
-    # デバッグログ: プログラムのチケット関連フィールドを確認
-    logger.info(f"Program {program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}, reservable_ticket_ids={program.get('reservable_ticket_ids')}")
+    logger.info(f"Program {program_id} ticket restriction: is_ticket_reserve_limit={is_ticket_reserve_limit}, ticket_reserve_limit_details={ticket_reserve_limit_details}")
     
-    # チケットIDを決定（プログラムに紐づくチケットがあればそれを使用、なければデフォルト）
+    # チケットIDを決定
     DEFAULT_TICKET_ID = 5  # Web予約用デフォルトチケット
-    if program_ticket_ids and len(program_ticket_ids) > 0:
-        # プログラムに紐づくチケットがある場合は最初のものを使用
-        ticket_id_to_grant = program_ticket_ids[0]
-        logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
+    ticket_id_to_grant = DEFAULT_TICKET_ID
+    
+    # チケット制限がある場合、制限されたチケットIDを使用
+    if is_ticket_reserve_limit and ticket_reserve_limit_details:
+        # ticket_reserve_limit_details から ticket_id を抽出
+        for detail in ticket_reserve_limit_details:
+            tid = detail.get("ticket_id") or detail.get("id")
+            if tid:
+                ticket_id_to_grant = tid
+                logger.info(f"Using ticket from ticket_reserve_limit_details: {ticket_id_to_grant}")
+                break
     else:
-        # なければデフォルトのチケットIDを使用
-        ticket_id_to_grant = DEFAULT_TICKET_ID
-        logger.info(f"Using default ticket ID: {ticket_id_to_grant}")
+        # 後方互換: 他のフィールドも確認
+        program_ticket_ids = (
+            program.get("consumable_ticket_ids") or 
+            program.get("ticket_ids") or 
+            program.get("reservable_ticket_ids") or
+            []
+        )
+        if program_ticket_ids and len(program_ticket_ids) > 0:
+            ticket_id_to_grant = program_ticket_ids[0]
+            logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
+        else:
+            logger.info(f"No program-linked ticket found, using default: {ticket_id_to_grant}")
     
     # 3. メンバーにチケットを付与
     try:
