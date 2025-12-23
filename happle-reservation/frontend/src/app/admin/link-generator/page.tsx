@@ -95,7 +95,7 @@ function LinkGeneratorContent() {
     
     const queryString = params.toString()
     // 自由枠予約画面へのリンクを生成
-    const url = queryString ? `${baseUrl}/free-schedule?${queryString}` : `${baseUrl}/free-schedule`
+    const url = queryString ? `${baseUrl}/?${queryString}` : `${baseUrl}`
     
     setGeneratedUrl(url)
     setCopied(false)

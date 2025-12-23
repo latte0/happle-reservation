@@ -219,7 +219,7 @@ DataLayerの値を使用するには、GTMで変数を作成します。
 | ページ | URL |
 |--------|-----|
 | トップ | https://happle-reservation-frontend.onrender.com/ |
-| 自由枠予約 | https://happle-reservation-frontend.onrender.com/free-schedule |
+| 自由枠予約 | https://happle-reservation-frontend.onrender.com |
 | リンク生成（管理画面） | https://happle-reservation-frontend.onrender.com/admin/link-generator |
 | 予約確認 | https://happle-reservation-frontend.onrender.com/reservation-detail?reservation_id=XXX |
 
@@ -228,7 +228,7 @@ DataLayerの値を使用するには、GTMで変数を作成します。
 管理画面で生成されるリンクは自由枠予約画面へ直接遷移します：
 
 ```
-https://happle-reservation-frontend.onrender.com/free-schedule?studio_id=2&studio_code=asmy_kumamoto&program_id=3&utm_source=google&utm_medium=cpc&utm_campaign=summer_sale
+https://happle-reservation-frontend.onrender.com?studio_id=2&studio_code=asmy_kumamoto&program_id=3&utm_source=google&utm_medium=cpc&utm_campaign=summer_sale
 ```
 
 このリンクにアクセスすると：
