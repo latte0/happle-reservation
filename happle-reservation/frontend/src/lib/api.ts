@@ -119,26 +119,26 @@ export interface Program {
 }
 
 /**
- * プログラムに明示的に紐づいたスタッフがいるかどうかをチェック
+ * プログラムに選択可能なスタッフ設定があるかどうかをチェック
  * 
- * 【重要】スタッフが明示的に紐づいていないプログラムは選択不可
- * - selectable_instructor_details が未設定または空 → false（スタッフ未設定）
- * - type === 'ALL' or 'RANDOM_ALL' → false（明示的に紐づいていない）
- * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' かつ items.length > 0 → true（明示的に紐づいている）
+ * スタッフ設定のルール:
+ * - selectable_instructor_details が未設定または空 → true（全スタッフから選択可能）
+ * - type === 'ALL' or 'RANDOM_ALL' → true（全スタッフから選択可能）
+ * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' かつ items.length > 0 → true（特定スタッフが紐づいている）
  * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' かつ items.length === 0 → false（スタッフなし）
  */
 export function hasSelectableInstructors(program: Program): boolean {
   const details = program.selectable_instructor_details
   if (!details || details.length === 0) {
-    // 設定なし = スタッフが紐づいていない → 選択不可
-    return false
+    // 設定なし = 全スタッフから選択可能
+    return true
   }
   
   // 最初の設定を使用（通常は1つのみ）
   const detail = details[0]
   if (detail.type === 'ALL' || detail.type === 'RANDOM_ALL') {
-    // 全スタッフから選択 = 明示的に紐づいていない → 選択不可
-    return false
+    // 全スタッフから選択可能
+    return true
   }
   
   if (detail.type === 'SELECTED' || detail.type === 'FIXED' || detail.type === 'RANDOM_SELECTED') {
@@ -146,7 +146,7 @@ export function hasSelectableInstructors(program: Program): boolean {
     return (detail.items?.length ?? 0) > 0
   }
   
-  return false
+  return true
 }
 
 /**
@@ -157,6 +157,9 @@ export function hasSelectableInstructors(program: Program): boolean {
  * - type === 'ALL' or 'RANDOM_ALL' → false（明示的に紐づいていない）
  * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' かつ items.length > 0 → true（明示的に紐づいている）
  * - type === 'SELECTED' / 'FIXED' / 'RANDOM_SELECTED' かつ items.length === 0 → false（設備なし）
+ * 
+ * ※ 複数の時間帯設定がある場合（例: 0-15分でBooth1、15-30分でBooth2）、
+ *    全ての時間帯で設備が紐づいている必要がある
  */
 export function hasSelectableResources(program: Program): boolean {
   const details = program.selectable_resource_details
@@ -184,7 +187,11 @@ export function hasSelectableResources(program: Program): boolean {
 }
 
 /**
- * プログラムがスタッフと設備の両方に紐づいているかチェック
+ * プログラムが予約可能な状態かチェック
+ * 
+ * 条件:
+ * - スタッフ: 設定があればOK（ALL/RANDOM_ALL含む）、特定スタッフ指定の場合は1人以上必要
+ * - 設備: 明示的に紐づいている必要がある（SELECTED/FIXED/RANDOM_SELECTED かつ items.length > 0）
  */
 export function isProgramFullyConfigured(program: Program): boolean {
   return hasSelectableInstructors(program) && hasSelectableResources(program)

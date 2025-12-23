@@ -12,34 +12,52 @@
 
 プログラムがメニュー一覧に表示されるための条件：
 
-### 必須条件
+### スタッフ設定（selectable_instructor_details）
 
-| 条件 | 説明 |
-|------|------|
-| スタッフが明示的に紐づいている | `selectable_instructor_details.type` が `SELECTED` / `FIXED` / `RANDOM_SELECTED` かつ `items.length > 0` |
-| 設備が明示的に紐づいている | `selectable_resource_details.type` が `SELECTED` / `FIXED` / `RANDOM_SELECTED` かつ `items.length > 0` |
+| type | items | 結果 | 説明 |
+|------|-------|------|------|
+| 未設定/空 | - | ✅ OK | 全スタッフから選択可能 |
+| `ALL` | - | ✅ OK | 全スタッフから選択可能 |
+| `RANDOM_ALL` | - | ✅ OK | 全スタッフから自動選択 |
+| `SELECTED` | 1人以上 | ✅ OK | 指定スタッフから選択 |
+| `FIXED` | 1人以上 | ✅ OK | 固定スタッフ |
+| `RANDOM_SELECTED` | 1人以上 | ✅ OK | 指定スタッフから自動選択 |
+| `SELECTED`/`FIXED`/`RANDOM_SELECTED` | 0人 | ❌ NG | スタッフなし |
 
-### 選択不可となる条件
+### 設備設定（selectable_resource_details）
 
-| 条件 | 理由 |
-|------|------|
-| `selectable_instructor_details` が未設定または空 | スタッフが紐づいていない |
-| `selectable_instructor_details.type` が `ALL` または `RANDOM_ALL` | 明示的に紐づいていない |
-| `selectable_instructor_details.items` が空 | スタッフが0人 |
-| `selectable_resource_details` が未設定または空 | 設備が紐づいていない |
-| `selectable_resource_details.type` が `ALL` または `RANDOM_ALL` | 明示的に紐づいていない |
-| `selectable_resource_details.items` が空 | 設備が0個 |
+| type | items | 結果 | 説明 |
+|------|-------|------|------|
+| 未設定/空 | - | ❌ NG | 設備未設定 |
+| `ALL` | - | ❌ NG | 明示的に紐づいていない |
+| `RANDOM_ALL` | - | ❌ NG | 明示的に紐づいていない |
+| `SELECTED` | 1個以上 | ✅ OK | 指定設備から選択 |
+| `FIXED` | 1個以上 | ✅ OK | 固定設備 |
+| `RANDOM_SELECTED` | 1個以上 | ✅ OK | 指定設備から自動選択 |
+| `SELECTED`/`FIXED`/`RANDOM_SELECTED` | 0個 | ❌ NG | 設備なし |
+
+### 時間帯設定（terms）
+
+設備は時間帯ごとに異なる設備を割り当てることができます：
+
+```
+例: 30分コース
+- 0分〜15分: Booth 1 を使用
+- 15分〜30分: Booth 2 を使用
+```
+
+全ての時間帯で設備が紐づいている必要があります。
 
 ### 判定関数
 
 ```typescript
-// スタッフが明示的に紐づいているか
+// スタッフ設定が有効か（ALL/RANDOM_ALLも含めてOK）
 hasSelectableInstructors(program): boolean
 
 // 設備が明示的に紐づいているか
 hasSelectableResources(program): boolean
 
-// スタッフと設備の両方が紐づいているか
+// プログラムが予約可能な状態か
 isProgramFullyConfigured(program): boolean
 ```
 
@@ -88,10 +106,12 @@ isProgramFullyConfigured(program): boolean
 
 | 条件 | 理由 |
 |------|------|
-| `selectable_instructor_details.type` が `ALL` または `RANDOM_ALL` | スタッフが明示的に紐づいていない |
+| `selectable_resource_details` が未設定/空 | 設備が紐づいていない |
 | `selectable_resource_details.type` が `ALL` または `RANDOM_ALL` | 設備が明示的に紐づいていない |
-| `selectable_instructor_details` が未設定/空 | スタッフ設定なし |
-| `selectable_resource_details` が未設定/空 | 設備設定なし |
+| `selectable_resource_details.items` が空 | 設備が0個 |
+| `selectable_instructor_details.type` が `SELECTED`等で `items` が空 | スタッフが0人 |
+
+> **Note**: スタッフは `ALL` / `RANDOM_ALL` でもOK（全スタッフから選択可能）
 
 ### ⚠️ 差異がある項目
 
