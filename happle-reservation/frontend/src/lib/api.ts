@@ -341,6 +341,15 @@ export interface ChoiceSchedule {
     title?: string
     description?: string
   }>
+  // 設備情報（同時予約可能数を含む）
+  resources_info?: Record<string, {
+    id: number
+    code?: string
+    name?: string
+    studio_id?: number
+    max_cc_reservable_num: number  // 同時予約可能数
+    max_reservable_num_at_day?: number
+  }>
 }
 
 export interface AvailableInstructor {

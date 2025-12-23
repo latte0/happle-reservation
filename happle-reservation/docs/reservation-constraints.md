@@ -332,9 +332,30 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 | `RANDOM_ALL` | 全設備から1つを自動選択 | 無視 |
 | `RANDOM_SELECTED` | 選択候補から1つを自動選択 | items の設備から選択 |
 
-### 設備の予定ブロック
+### 設備のマスター情報（API: `/master/resources`）
 
-設備にも予定ブロック（休憩ブロック）を設定可能です。`shift_slots` APIで `entity_type: "RESOURCE"` として取得されます。
+設備には同時予約可能数などの設定があります:
+
+```json
+{
+  "id": 456,
+  "code": "RES001",
+  "name": "施術室A",
+  "studio_id": 1,
+  "status": 1,
+  "max_cc_reservable_num": 2,
+  "max_reservable_num_at_day": 10
+}
+```
+
+| フィールド | 説明 |
+|-----------|------|
+| `max_cc_reservable_num` | 同時予約可能数（同じ時間帯に受け入れ可能な予約数） |
+| `max_reservable_num_at_day` | 1日当たりの予約上限数 |
+
+### 設備の予定ブロック（API: `/reservation/shift_slots`）
+
+設備にも予定ブロック（休憩ブロック）を設定可能です。`entity_type: "RESOURCE"` として取得されます:
 
 ```json
 {
@@ -346,6 +367,11 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
   "title": "メンテナンス"
 }
 ```
+
+> **Note**: `entity_type` は hacomono API ドキュメントで正式に定義されています:
+> - `Enum: "INSTRUCTOR" "RESOURCE"`
+> - `INSTRUCTOR`: スタッフ
+> - `RESOURCE`: 設備
 
 ---
 
@@ -370,10 +396,14 @@ hacomono API `/reservation/shift_slots` から取得できるスタッフの手�
 1. **フロントエンド**:
    - プログラムの `selectable_resource_details.type` が `SELECTED`, `FIXED`, `RANDOM_SELECTED` の場合のみ設備チェックを実行
    - `reservation_assign_resource` で既存予約との重複を確認
-   - スタッフが空いていても設備が全てブロックされていれば「×（設備使用中）」と表示
+   - `resources_info.max_cc_reservable_num`（同時予約可能数）を考慮して空き判定
+   - 予定ブロック（SHIFT_SLOT）は完全ブロックとして扱う
+   - スタッフが空いていても設備が全て満員なら「×（設備使用中）」と表示
 
 2. **バックエンド**:
    - 予約作成時に設備の空き状況をチェック
+   - 設備の `max_cc_reservable_num`（同時予約可能数）を取得してキャッシュ（5分間）
+   - 同時間帯の予約数をカウントし、`max_cc_reservable_num` 未満なら予約可能
    - 空いている設備があれば `resource_id_set` パラメータに設定して予約
    - 設備がない場合はエラー「この時間帯に利用可能な設備がありません」を返す
 

@@ -435,6 +435,38 @@ class HacomonoClient:
             params["query"] = json.dumps(query)
         return self.get("/reservation/shift_slots", params=params)
     
+    # ==================== 設備 API ====================
+    
+    def get_resources(self, query: Optional[Dict] = None) -> Dict[str, Any]:
+        """設備一覧を取得
+        
+        Args:
+            query: 検索クエリ {
+                "id": int,
+                "studio_id": int,
+                "status": int (1: 有効, 2: 無効)
+            }
+        
+        Returns:
+            resources: [{
+                "id": int,
+                "code": str,
+                "name": str,
+                "studio_id": int,
+                "status": int,
+                "max_cc_reservable_num": int,  # 同時予約可能数
+                "max_reservable_num_at_day": int  # 1日当たりの予約上限数
+            }]
+        """
+        params = {}
+        if query:
+            params["query"] = json.dumps(query)
+        return self.get("/master/resources", params=params)
+    
+    def get_resource(self, resource_id: int) -> Dict[str, Any]:
+        """設備を取得"""
+        return self.get(f"/master/resources/{resource_id}")
+    
     # ==================== チケット API ====================
     
     def get_tickets(self, query: Optional[Dict] = None) -> Dict[str, Any]:

@@ -298,25 +298,39 @@ function FreeScheduleContent() {
     return null
   }
 
-  // 設備がブロックされているかチェック
-  const isResourceBlocked = (
+  // 設備の予約数と完全ブロック状態をカウント
+  const getResourceAvailability = (
     resourceId: number,
     cellTime: Date,
     cellEndTime: Date,
     reservedResources: Array<{ entity_id: number; start_at: string; end_at: string; reservation_type?: string }>
-  ): boolean => {
-    return reservedResources.some(res => {
-      if (res.entity_id !== resourceId) return false
+  ): { reservationCount: number; isBlocked: boolean } => {
+    let reservationCount = 0
+    let isBlocked = false
+    
+    reservedResources.forEach(res => {
+      if (res.entity_id !== resourceId) return
       
       const resStart = parseISO(res.start_at)
       const resEnd = parseISO(res.end_at)
       
-      // 設備のブロック範囲（インターバルなし）
-      return cellTime < resEnd && cellEndTime > resStart
+      // 時間が重複するか
+      if (cellTime < resEnd && cellEndTime > resStart) {
+        // 予定ブロック（SHIFT_SLOT）の場合は完全ブロック
+        const reservationType = (res.reservation_type || '').toUpperCase()
+        if (['BREAK', 'BLOCK', 'REST', 'SHIFT_SLOT'].includes(reservationType)) {
+          isBlocked = true
+        } else {
+          // 通常の予約はカウント
+          reservationCount++
+        }
+      }
     })
+    
+    return { reservationCount, isBlocked }
   }
 
-  // 指定時間帯に利用可能な設備があるかチェック
+  // 指定時間帯に利用可能な設備があるかチェック（同時予約可能数を考慮）
   const hasAvailableResource = (
     cellTime: Date,
     cellEndTime: Date,
@@ -328,17 +342,30 @@ function FreeScheduleContent() {
     if (selectableResourceIds.size === 0) return false  // 設備が必要だが選択可能なものがない
     
     const reservedResources = schedule?.reservation_assign_resource || []
+    const resourcesInfo = schedule?.resources_info || {}
     
-    // 選択可能な設備の中で、ブロックされていないものがあるか
+    // 選択可能な設備の中で、空きがあるものがあるか
     const resourceIdArray = Array.from(selectableResourceIds)
     for (let i = 0; i < resourceIdArray.length; i++) {
       const resourceId = resourceIdArray[i]
-      if (!isResourceBlocked(resourceId, cellTime, cellEndTime, reservedResources)) {
-        return true  // 利用可能な設備が見つかった
+      const { reservationCount, isBlocked } = getResourceAvailability(
+        resourceId, cellTime, cellEndTime, reservedResources
+      )
+      
+      // 予定ブロックで完全ブロックされている場合はスキップ
+      if (isBlocked) continue
+      
+      // 同時予約可能数を取得（デフォルト1）
+      const resourceInfo = resourcesInfo[String(resourceId)]
+      const maxReservableNum = resourceInfo?.max_cc_reservable_num || 1
+      
+      // 予約数が同時予約可能数未満なら利用可能
+      if (reservationCount < maxReservableNum) {
+        return true
       }
     }
     
-    return false  // 全ての設備がブロックされている
+    return false  // 全ての設備が満員または完全ブロック
   }
 
   // Grid Generation Logic (Same as before)

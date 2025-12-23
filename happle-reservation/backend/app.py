@@ -65,6 +65,11 @@ _instructor_studio_map_cache = None
 _instructor_studio_map_cache_time = None
 INSTRUCTOR_CACHE_TTL_SECONDS = 60  # 60秒間キャッシュ
 
+# キャッシュ: 設備情報（同時予約可能数を含む）
+_resources_cache = None
+_resources_cache_time = None
+RESOURCES_CACHE_TTL_SECONDS = 300  # 5分間キャッシュ（設備情報は頻繁に変わらない）
+
 
 def get_cached_instructor_studio_map(client: HacomonoClient) -> dict:
     """スタッフのスタジオ紐付け情報をキャッシュ付きで取得
@@ -112,6 +117,60 @@ def get_cached_instructor_studio_map(client: HacomonoClient) -> dict:
         return _instructor_studio_map_cache
     
     return instructor_studio_map
+
+
+def get_cached_resources(client: HacomonoClient, studio_id: int = None) -> dict:
+    """設備情報をキャッシュ付きで取得
+    
+    Returns:
+        { resource_id: { "id": int, "name": str, "max_cc_reservable_num": int, ... } }
+    """
+    global _resources_cache, _resources_cache_time
+    
+    now = datetime.now()
+    
+    # キャッシュが有効ならそれを返す
+    if (_resources_cache is not None and 
+        _resources_cache_time is not None and
+        (now - _resources_cache_time).total_seconds() < RESOURCES_CACHE_TTL_SECONDS):
+        logger.debug("Using cached resources")
+        return _resources_cache
+    
+    # 新規取得
+    resources_map = {}
+    try:
+        query = {"status": 1}  # 有効な設備のみ
+        if studio_id:
+            query["studio_id"] = studio_id
+        resources_response = client.get_resources(query)
+        resources_data = resources_response.get("data", {}).get("resources", {})
+        resources_list = resources_data.get("list", []) if isinstance(resources_data, dict) else []
+        
+        for resource in resources_list:
+            resource_id = resource.get("id")
+            resources_map[resource_id] = {
+                "id": resource_id,
+                "code": resource.get("code"),
+                "name": resource.get("name"),
+                "studio_id": resource.get("studio_id"),
+                "max_cc_reservable_num": resource.get("max_cc_reservable_num") or 1,  # デフォルト1
+                "max_reservable_num_at_day": resource.get("max_reservable_num_at_day")
+            }
+        
+        # キャッシュを更新
+        _resources_cache = resources_map
+        _resources_cache_time = now
+        logger.info(f"Loaded resources cache: {len(resources_map)} resources")
+        return resources_map
+    except Exception as e:
+        logger.warning(f"Failed to get resources: {e}")
+    
+    # 失敗した場合、キャッシュがあればそれを返す
+    if _resources_cache is not None:
+        logger.warning("Using stale cache for resources")
+        return _resources_cache
+    
+    return resources_map
 
 
 def handle_errors(f):
@@ -2428,8 +2487,13 @@ def create_choice_reservation():
                 reserved_resources = list(schedule.get("reservation_assign_resource", []))
                 reserved_resources.extend(resource_blocks)  # 設備の予定ブロックも追加
                 
-                # 予約済み設備IDを取得
-                reserved_resource_ids = set()
+                # 設備情報（同時予約可能数）を取得
+                resources_info = get_cached_resources(client, studio_id)
+                
+                # 各設備ごとの予約数と完全ブロックをカウント
+                resource_reservation_count = {}  # {resource_id: count}
+                resource_is_blocked = {}  # {resource_id: True/False} - 予定ブロックで完全にブロックされているか
+                
                 for reserved in reserved_resources:
                     try:
                         reserved_start_str = reserved.get("start_at", "")
@@ -2439,31 +2503,42 @@ def create_choice_reservation():
                         reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
                         reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
                         
-                        # 設備の予定ブロック（SHIFT_SLOT）の場合はインターバルを考慮せずブロック
-                        reservation_type = reserved.get("reservation_type", "").upper()
-                        is_block = reservation_type in ["BREAK", "BLOCK", "REST", "SHIFT_SLOT"]
-                        
-                        if is_block:
-                            block_start = reserved_start
-                            block_end = reserved_end
-                        else:
-                            # 設備予約のブロック範囲（インターバルなし：設備は時間ぴったりで使用）
-                            block_start = reserved_start
-                            block_end = reserved_end
-                        
                         # 予約したい時間帯がブロック範囲と重複するかチェック
-                        if start_datetime < block_end and proposed_end > block_start:
-                            reserved_resource_ids.add(reserved.get("entity_id"))
+                        if start_datetime < reserved_end and proposed_end > reserved_start:
+                            resource_id = reserved.get("entity_id")
+                            
+                            # 設備の予定ブロック（SHIFT_SLOT）の場合は完全ブロック
+                            reservation_type = reserved.get("reservation_type", "").upper()
+                            is_block = reservation_type in ["BREAK", "BLOCK", "REST", "SHIFT_SLOT"]
+                            
+                            if is_block:
+                                resource_is_blocked[resource_id] = True
+                            else:
+                                # 通常の予約はカウントを増やす
+                                resource_reservation_count[resource_id] = resource_reservation_count.get(resource_id, 0) + 1
                     except Exception as e:
                         logger.warning(f"Failed to parse reserved resource time: {e}")
                         continue
                 
-                # 空いている設備を抽出
+                # 空いている設備を抽出（同時予約可能数を考慮）
                 available_resources = []
                 if selectable_resource_ids:
                     for resource_id in selectable_resource_ids:
-                        if resource_id not in reserved_resource_ids:
+                        # 予定ブロックで完全ブロックされている場合はスキップ
+                        if resource_is_blocked.get(resource_id, False):
+                            logger.debug(f"Resource {resource_id} is blocked by SHIFT_SLOT")
+                            continue
+                        
+                        # 同時予約可能数を取得（デフォルト1）
+                        resource_info = resources_info.get(resource_id, {})
+                        max_cc_reservable_num = resource_info.get("max_cc_reservable_num", 1)
+                        current_count = resource_reservation_count.get(resource_id, 0)
+                        
+                        if current_count < max_cc_reservable_num:
                             available_resources.append(resource_id)
+                            logger.debug(f"Resource {resource_id} is available: {current_count}/{max_cc_reservable_num}")
+                        else:
+                            logger.debug(f"Resource {resource_id} is fully booked: {current_count}/{max_cc_reservable_num}")
                 else:
                     # ALL, RANDOM_ALL の場合は設備チェックなし
                     logger.info(f"Program {program_id} allows all resources, skipping resource availability check")
@@ -2491,7 +2566,7 @@ def create_choice_reservation():
                             "error": "予約の作成に失敗しました",
                             "message": "この時間帯に利用可能な設備がありません。別の時間帯をお選びください。",
                             "error_code": "NO_AVAILABLE_RESOURCE"
-                        }), 400
+                }), 400
         except Exception as e:
             logger.warning(f"Failed to get available instructors: {e}")
             
@@ -2896,6 +2971,9 @@ def get_choice_schedule():
         # スタッフのスタジオ紐付け情報を取得（キャッシュ付き、リトライあり）
         instructor_studio_map = get_cached_instructor_studio_map(client)
         
+        # 設備情報を取得（同時予約可能数を含む）
+        resources_info = get_cached_resources(client, actual_studio_id)
+        
         return jsonify({
             "schedule": {
                 "date": date,
@@ -2906,6 +2984,7 @@ def get_choice_schedule():
                 "shift_instructor": schedule.get("shift_instructor", []),
                 "reservation_assign_instructor": all_instructor_reservations,
                 "reservation_assign_resource": all_resource_reservations,  # 設備の予約情報
+                "resources_info": resources_info,  # 設備情報（同時予約可能数を含む）
                 "fixed_slot_lessons": fixed_slot_lessons,
                 "fixed_slot_interval": {
                     "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
@@ -3087,7 +3166,10 @@ def get_choice_schedule_range():
                 except Exception as e:
                     logger.warning(f"Failed to get shift slots for {date}: {e}")
         
-        # 5. 結果を統合
+        # 5. 設備情報を取得（同時予約可能数を含む）
+        resources_info = get_cached_resources(client, actual_studio_id)
+        
+        # 6. 結果を統合
         result_schedules = {}
         for date in dates:
             schedule = schedules.get(date)
@@ -3110,6 +3192,7 @@ def get_choice_schedule_range():
                     "shift_instructor": schedule.get("shift_instructor", []),
                     "reservation_assign_instructor": all_instructor_reservations,
                     "reservation_assign_resource": all_resource_reservations,  # 設備の予約情報
+                    "resources_info": resources_info,  # 設備情報（同時予約可能数を含む）
                     "fixed_slot_lessons": fixed_slot_lessons_by_date.get(date, []),
                     "fixed_slot_interval": {
                         "before_minutes": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
