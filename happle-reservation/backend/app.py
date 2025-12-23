@@ -765,6 +765,12 @@ def send_slack_notification(
                 }
             ]
         
+        # フォールバック用のテキストサマリーを生成
+        if status == "success":
+            text_summary = f"✅ 予約成功 - 予約ID: {reservation_id}, お客様: {guest_name}, 店舗: {studio_name}, 日時: {reservation_date} {reservation_time}"
+        else:
+            text_summary = f"❌ 予約失敗 - エラーコード: {error_code}, エラー: {error_message}, お客様: {guest_name}"
+        
         payload = {
             "text": text_summary,  # フォールバック用のテキスト
             "attachments": [
