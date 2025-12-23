@@ -324,6 +324,13 @@ export interface ChoiceReservationRequest {
   studio_email?: string
 }
 
+// 選択可能プログラムの詳細
+export interface SelectableProgramDetail {
+  program_id: number
+  program_code: string
+  program_name: string
+}
+
 export interface ChoiceSchedule {
   date: string
   studio_id?: number  // スタジオID
@@ -332,7 +339,11 @@ export interface ChoiceSchedule {
     name: string
     studio_room_id: number
     schedule_nick: number  // 時間の刻み（分）
-  }
+    start_date?: string  // 適用開始日 (yyyy-MM-dd)
+    end_date?: string    // 適用終了日 (yyyy-MM-dd)
+    selectable_program_type?: 'ALL' | 'SELECTED'  // 選択可能プログラムのタイプ
+    selectable_program_details?: SelectableProgramDetail[]  // 選択可能プログラムのリスト
+  } | null
   shift: {
     id: number
     period: number
@@ -424,6 +435,7 @@ export interface StudioRoom {
   name: string
   code: string
   studio_id: number
+  reservation_type?: 'CHOICE' | 'FIXED'  // 予約タイプ
 }
 
 // ==================== API Functions ====================

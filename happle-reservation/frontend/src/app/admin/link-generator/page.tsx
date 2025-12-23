@@ -1,13 +1,17 @@
 'use client'
 
 import { useEffect, useState, Suspense } from 'react'
-import { getPrograms, getStudios, Program, Studio } from '@/lib/api'
+import { getPrograms, getStudios, getStudioRooms, getChoiceSchedule, Program, Studio, StudioRoom, ChoiceSchedule } from '@/lib/api'
+import { format } from 'date-fns'
 
 function LinkGeneratorContent() {
   const [studios, setStudios] = useState<Studio[]>([])
-  const [programs, setPrograms] = useState<Program[]>([])
+  const [allPrograms, setAllPrograms] = useState<Program[]>([])  // 全プログラム
+  const [filteredPrograms, setFilteredPrograms] = useState<Program[]>([])  // フィルタリング済みプログラム
   const [loading, setLoading] = useState(true)
+  const [programsLoading, setProgramsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [studioError, setStudioError] = useState<string | null>(null)
   
   // フォーム入力値
   const [selectedStudioId, setSelectedStudioId] = useState<string>('')
@@ -45,10 +49,11 @@ function LinkGeneratorContent() {
         setLoading(true)
         const [studiosData, programsData] = await Promise.all([
           getStudios(),
-          getPrograms()
+          getPrograms({ filterFullyConfigured: true })
         ])
         setStudios(studiosData)
-        setPrograms(programsData)
+        setAllPrograms(programsData)
+        setFilteredPrograms(programsData)  // 初期状態では全プログラムを表示
       } catch (err) {
         setError('データの読み込みに失敗しました')
         console.error(err)
@@ -58,6 +63,98 @@ function LinkGeneratorContent() {
     }
     loadData()
   }, [])
+  
+  // 店舗選択時に予約カテゴリ設定を取得してプログラムをフィルタリング
+  const handleStudioSelect = async (studioId: string) => {
+    setSelectedStudioId(studioId)
+    setSelectedProgramId('')  // プログラム選択をリセット
+    setStudioError(null)
+    
+    if (!studioId) {
+      // 店舗未選択時は全プログラムを表示
+      setFilteredPrograms(allPrograms)
+      return
+    }
+    
+    setProgramsLoading(true)
+    
+    try {
+      const studio = studios.find(s => s.id.toString() === studioId)
+      if (!studio) {
+        setFilteredPrograms(allPrograms)
+        return
+      }
+      
+      // 予約カテゴリを取得
+      const roomsData = await getStudioRooms(studio.id)
+      const choiceRooms = roomsData.filter(r => r.reservation_type === 'CHOICE')
+      const candidateRooms = choiceRooms.length > 0 
+        ? choiceRooms 
+        : roomsData.filter(r => r.name.includes('Test') || r.id !== 5)
+      
+      if (candidateRooms.length === 0) {
+        setStudioError('この店舗には予約可能なカテゴリがありません')
+        setFilteredPrograms([])
+        return
+      }
+      
+      // 現在日付
+      const todayStr = format(new Date(), 'yyyy-MM-dd')
+      
+      // 適用期間内の予約カテゴリを探す
+      let validRoomService: ChoiceSchedule['studio_room_service'] | null = null
+      
+      for (const room of candidateRooms) {
+        try {
+          const scheduleData = await getChoiceSchedule(room.id, todayStr)
+          const roomService = scheduleData?.studio_room_service
+          
+          if (!roomService) continue
+          
+          // 適用期間のチェック
+          let isWithinPeriod = true
+          if (roomService.start_date && roomService.end_date) {
+            isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
+          }
+          
+          if (isWithinPeriod) {
+            validRoomService = roomService
+            break
+          }
+        } catch (err) {
+          console.error(`Failed to check room ${room.id}:`, err)
+          continue
+        }
+      }
+      
+      if (!validRoomService) {
+        setStudioError('この店舗は現在予約を受け付けていない期間です')
+        setFilteredPrograms([])
+        return
+      }
+      
+      // 選択可能プログラムでフィルタリング
+      let filtered = allPrograms.filter(p => {
+        // スタジオIDでフィルタリング（プログラムにstudio_idがある場合）
+        // ここでは予約カテゴリの設定に基づいてフィルタリング
+        return true
+      })
+      
+      if (validRoomService.selectable_program_type === 'SELECTED' && validRoomService.selectable_program_details) {
+        const selectableProgramIds = new Set(validRoomService.selectable_program_details.map(p => p.program_id))
+        filtered = allPrograms.filter(p => selectableProgramIds.has(p.id))
+      }
+      
+      setFilteredPrograms(filtered)
+      
+    } catch (err) {
+      console.error('Failed to load studio room service:', err)
+      setStudioError('予約カテゴリ設定の読み込みに失敗しました')
+      setFilteredPrograms(allPrograms)
+    } finally {
+      setProgramsLoading(false)
+    }
+  }
 
   const generateUrl = () => {
     const params = new URLSearchParams()
@@ -114,7 +211,7 @@ function LinkGeneratorContent() {
   }
 
   const selectedStudio = studios.find(s => s.id.toString() === selectedStudioId)
-  const selectedProgram = programs.find(p => p.id.toString() === selectedProgramId)
+  const selectedProgram = filteredPrograms.find(p => p.id.toString() === selectedProgramId)
 
   if (loading) {
     return (
@@ -193,7 +290,7 @@ function LinkGeneratorContent() {
             </label>
             <select
               value={selectedStudioId}
-              onChange={(e) => setSelectedStudioId(e.target.value)}
+              onChange={(e) => handleStudioSelect(e.target.value)}
               className="w-full px-4 py-3 border border-accent-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
             >
               <option value="">店舗を指定しない</option>
@@ -203,6 +300,9 @@ function LinkGeneratorContent() {
                 </option>
               ))}
             </select>
+            {studioError && (
+              <p className="text-sm text-red-500 mt-1">{studioError}</p>
+            )}
           </div>
 
           {/* Program Selection */}
@@ -210,18 +310,28 @@ function LinkGeneratorContent() {
             <label className="block text-sm font-medium text-accent-700 mb-2">
               メニューを選択 <span className="text-accent-400">（任意）</span>
             </label>
-            <select
-              value={selectedProgramId}
-              onChange={(e) => setSelectedProgramId(e.target.value)}
-              className="w-full px-4 py-3 border border-accent-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-            >
-              <option value="">メニューを指定しない</option>
-              {programs.map((program) => (
-                <option key={program.id} value={program.id.toString()}>
-                  {program.name} {program.price && `(¥${program.price.toLocaleString()})`}
-                </option>
-              ))}
-            </select>
+            {programsLoading ? (
+              <div className="w-full px-4 py-3 border border-accent-200 rounded-xl bg-accent-50 text-accent-500">
+                読み込み中...
+              </div>
+            ) : (
+              <select
+                value={selectedProgramId}
+                onChange={(e) => setSelectedProgramId(e.target.value)}
+                className="w-full px-4 py-3 border border-accent-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                disabled={filteredPrograms.length === 0 && selectedStudioId !== ''}
+              >
+                <option value="">メニューを指定しない</option>
+                {filteredPrograms.map((program) => (
+                  <option key={program.id} value={program.id.toString()}>
+                    {program.name} {program.price && `(¥${program.price.toLocaleString()})`}
+                  </option>
+                ))}
+              </select>
+            )}
+            {selectedStudioId && filteredPrograms.length === 0 && !programsLoading && (
+              <p className="text-sm text-accent-500 mt-1">この店舗で選択可能なメニューがありません</p>
+            )}
           </div>
 
           {/* LINE公式アカウントURL */}

@@ -3,7 +3,7 @@
 import { useEffect, useState, Suspense, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { sendGTMEvent } from '@next/third-parties/google'
-import { getChoiceScheduleRange, getStudios, getPrograms, getStudioRooms, checkReservability, ChoiceSchedule, Studio, Program, StudioRoom, hasSelectableInstructors, hasSelectableResources, getSelectableInstructorIds } from '@/lib/api'
+import { getChoiceSchedule, getChoiceScheduleRange, getStudios, getPrograms, getStudioRooms, checkReservability, ChoiceSchedule, Studio, Program, StudioRoom, hasSelectableInstructors, hasSelectableResources, getSelectableInstructorIds } from '@/lib/api'
 import { format, addDays, startOfDay, subDays, parseISO, isSameDay } from 'date-fns'
 import { ja } from 'date-fns/locale'
 
@@ -62,6 +62,9 @@ function FreeScheduleContent() {
   const [selectedProgram, setSelectedProgram] = useState<Program | null>(null)
   
   const [studioRoomId, setStudioRoomId] = useState<number | null>(null)
+  
+  // 予約カテゴリ設定（studio_room_service）を保存
+  const [studioRoomService, setStudioRoomService] = useState<ChoiceSchedule['studio_room_service'] | null>(null)
 
   // Calendar State - 今日を起点に7日間表示
   const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() => startOfDay(new Date()))
@@ -113,14 +116,78 @@ function FreeScheduleContent() {
       setSelectedProgram(null)
       setStudioRoomId(null)
       setScheduleMap(new Map())
+      setStudioRoomService(null)
     }
     
     try {
+        // Load Rooms first
+        const roomsData = await getStudioRooms(studio.id)
+        // CHOICEタイプの部屋を探す
+        const choiceRooms = roomsData.filter(r => r.reservation_type === 'CHOICE')
+        const candidateRooms = choiceRooms.length > 0 
+          ? choiceRooms 
+          : roomsData.filter(r => r.name.includes('Test') || r.id !== 5)
+        
+        if (candidateRooms.length === 0) {
+            setError('予約可能な部屋が見つかりませんでした')
+            return
+        }
+        
+        // 現在時刻（日本時間）を取得して日付のみで比較
+        const now = new Date()
+        const todayStr = format(now, 'yyyy-MM-dd')
+        
+        // 適用期間内の予約カテゴリを探す
+        let validRoom: StudioRoom | null = null
+        let validRoomService: ChoiceSchedule['studio_room_service'] | null = null
+        
+        for (const room of candidateRooms) {
+          try {
+            const scheduleData = await getChoiceSchedule(room.id, todayStr)
+            const roomService = scheduleData?.studio_room_service
+            
+            if (!roomService) continue
+            
+            // 適用期間のチェック（日付のみで比較）
+            // start_date, end_dateがない場合は常に有効とみなす
+            let isWithinPeriod = true
+            if (roomService.start_date && roomService.end_date) {
+              // 日付文字列で比較（yyyy-MM-dd形式）
+              isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
+            }
+            
+            if (isWithinPeriod) {
+              validRoom = room
+              validRoomService = roomService
+              break
+            }
+          } catch (err) {
+            console.error(`Failed to check room ${room.id}:`, err)
+            continue
+          }
+        }
+        
+        if (!validRoom || !validRoomService) {
+          setError('現在予約可能な期間の予約カテゴリがありません。この店舗は現在予約を受け付けていません。')
+          setPrograms([])
+          return
+        }
+        
+        setStudioRoomId(validRoom.id)
+        setStudioRoomService(validRoomService)
+        
         // Load Programs（スタッフと設備の両方が紐づいているプログラムのみ）
-        const programsData = await getPrograms({
+        let programsData = await getPrograms({
           studioId: studio.id,
           filterFullyConfigured: true
         })
+        
+        // 選択可能プログラムでフィルタリング（SELECTED の場合）
+        if (validRoomService.selectable_program_type === 'SELECTED' && validRoomService.selectable_program_details) {
+          const selectableProgramIds = new Set(validRoomService.selectable_program_details.map(p => p.program_id))
+          programsData = programsData.filter(p => selectableProgramIds.has(p.id))
+        }
+        
         setPrograms(programsData)
         
         // URLパラメータでプログラムが指定されている場合は自動選択
@@ -129,24 +196,6 @@ function FreeScheduleContent() {
           if (initialProgram) {
             setSelectedProgram(initialProgram)
           }
-        }
-        
-        // Load Rooms & Find Choice Room
-        const roomsData = await getStudioRooms(studio.id)
-        // Find a room that supports choice reservation (simplified logic: usually reservation_type='CHOICE' but API might not return it directly here)
-        // For now, we assume if it's not the fixed lesson room (id=5), it might be the choice room.
-        // Or better, checking reservation_type if available. 
-        // Based on previous context: Test Room (id=3) is Choice. Pilates Room (id=5) is Fixed.
-        // Let's pick the first one that is NOT id=5 for now, or just pick the first one if we can't distinguish.
-        // Ideally the API response for StudioRoom should include reservation_type.
-        
-        // 仮ロジック: 固定枠(ID:5)以外を選択、または名前で判断
-        const choiceRoom = roomsData.find(r => r.name.includes('Test') || r.id !== 5) || roomsData[0]
-        
-        if (choiceRoom) {
-            setStudioRoomId(choiceRoom.id)
-        } else {
-            setError('予約可能な部屋が見つかりませんでした')
         }
 
     } catch (err) {
@@ -417,8 +466,9 @@ function FreeScheduleContent() {
     // コースの所要時間（分）: プログラムから取得、なければintervalを使用
     const serviceMinutes = selectedProgram?.service_minutes || interval
     
-    // 表示間隔もコースの所要時間に合わせる（60分コースなら60分刻み）
-    const displayInterval = serviceMinutes
+    // 表示間隔はhacomonoの予約カテゴリ設定（schedule_nick）を使用
+    // これにより店舗ごとに異なる時間刻みに対応（例: 15分、30分など）
+    const displayInterval = interval
     
     // 予約締切時間（開始X分前まで）: プログラムから取得、デフォルトは0（直前まで可）
     const reservableToMinutes = selectedProgram?.reservable_to_minutes ?? 0
