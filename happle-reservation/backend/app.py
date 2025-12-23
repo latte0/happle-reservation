@@ -1137,6 +1137,32 @@ def get_program(program_id: int):
     })
 
 
+@app.route("/api/tickets", methods=["GET"])
+@handle_errors
+def get_tickets():
+    """チケット一覧を取得"""
+    client = get_hacomono_client()
+    response = client.get_tickets()
+    tickets = response.get("data", {}).get("tickets", {}).get("list", [])
+    
+    return jsonify({
+        "tickets": [
+            {
+                "id": ticket.get("id"),
+                "code": ticket.get("code"),
+                "name": ticket.get("name"),
+                "status": ticket.get("status"),
+                "price": ticket.get("price"),
+                "max_count": ticket.get("max_count"),
+                "valid_days": ticket.get("valid_days"),
+                "description": ticket.get("description"),
+            }
+            for ticket in tickets
+        ],
+        "total_count": len(tickets)
+    })
+
+
 @app.route("/api/instructors/available", methods=["GET"])
 @handle_errors
 def get_available_instructors():
@@ -1612,9 +1638,22 @@ def create_reservation():
             program_response = client.get_program(lesson_program_id)
             program = program_response.get("data", {}).get("program", {})
             
-            # プログラムに紐づくチケットIDを取得（ticket_ids, consumable_ticket_ids などを確認）
-            program_ticket_ids = program.get("ticket_ids") or program.get("consumable_ticket_ids") or []
-            logger.info(f"Fixed slot program {lesson_program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}")
+            # デバッグ: プログラムのすべてのチケット関連フィールドをログ出力
+            ticket_related_keys = [k for k in program.keys() if 'ticket' in k.lower()]
+            logger.info(f"Program {lesson_program_id} ALL ticket-related keys: {ticket_related_keys}")
+            for key in ticket_related_keys:
+                logger.info(f"  {key}: {program.get(key)}")
+            
+            # プログラムに紐づくチケットIDを取得（複数のフィールドを確認）
+            # hacomonoでは「予約可能なチケット」は consumable_ticket_ids または reservable_ticket_ids に格納される
+            program_ticket_ids = (
+                program.get("consumable_ticket_ids") or 
+                program.get("ticket_ids") or 
+                program.get("reservable_ticket_ids") or
+                program.get("limit_ticket_ids") or
+                []
+            )
+            logger.info(f"Fixed slot program {lesson_program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}, reservable_ticket_ids={program.get('reservable_ticket_ids')}")
             
             if program_ticket_ids and len(program_ticket_ids) > 0:
                 ticket_id_to_grant = program_ticket_ids[0]
@@ -2292,11 +2331,24 @@ def create_choice_reservation():
     program_response = client.get_program(program_id)
     program = program_response.get("data", {}).get("program", {})
     
-    # プログラムに紐づくチケットIDを取得（ticket_ids, consumable_ticket_ids などを確認）
-    program_ticket_ids = program.get("ticket_ids") or program.get("consumable_ticket_ids") or []
+    # デバッグ: プログラムのすべてのチケット関連フィールドをログ出力
+    ticket_related_keys = [k for k in program.keys() if 'ticket' in k.lower()]
+    logger.info(f"Program {program_id} ALL ticket-related keys: {ticket_related_keys}")
+    for key in ticket_related_keys:
+        logger.info(f"  {key}: {program.get(key)}")
+    
+    # プログラムに紐づくチケットIDを取得（複数のフィールドを確認）
+    # hacomonoでは「予約可能なチケット」は consumable_ticket_ids または reservable_ticket_ids に格納される
+    program_ticket_ids = (
+        program.get("consumable_ticket_ids") or 
+        program.get("ticket_ids") or 
+        program.get("reservable_ticket_ids") or
+        program.get("limit_ticket_ids") or
+        []
+    )
     
     # デバッグログ: プログラムのチケット関連フィールドを確認
-    logger.info(f"Program {program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}")
+    logger.info(f"Program {program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}, reservable_ticket_ids={program.get('reservable_ticket_ids')}")
     
     # チケットIDを決定（プログラムに紐づくチケットがあればそれを使用、なければデフォルト）
     DEFAULT_TICKET_ID = 5  # Web予約用デフォルトチケット
