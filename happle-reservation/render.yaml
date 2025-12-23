@@ -31,7 +31,7 @@ services:
         sync: false
       # CORS設定
       - key: CORS_ORIGINS
-        value: https://happle-reservation-frontend.onrender.com
+        value: https://happle-reservation-frontend.onrender.com,https://reserve-now.jp,https://www.reserve-now.jp
 
   # Frontend (Next.js with Docker)
   - type: web
