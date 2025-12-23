@@ -1401,8 +1401,13 @@ def _parse_hacomono_error(error: HacomonoAPIError) -> dict:
 
 def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone: str, 
                          guest_name_kana: str = "", guest_note: str = "",
-                         gender: int = 1, birthday: str = "2000-01-01", studio_id: int = 2):
-    """ゲストメンバーを作成（または既存メンバーを使用）し、チケットを付与"""
+                         gender: int = 1, birthday: str = "2000-01-01", studio_id: int = 2,
+                         ticket_id: int = 5):
+    """ゲストメンバーを作成（または既存メンバーを使用）し、チケットを付与
+    
+    Args:
+        ticket_id: 付与するチケットID（デフォルト: 5 = Web予約用チケット）
+    """
     import secrets
     import string
     
@@ -1466,14 +1471,14 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
         
         logger.info(f"Created new member ID: {member_id}")
     
-    # 2. チケットを付与（Web予約用チケット ID:5）
+    # 2. チケットを付与（指定されたチケットID、またはデフォルトのWeb予約用チケット）
     try:
-        ticket_response = client.grant_ticket_to_member(member_id, ticket_id=5, num=1)
+        ticket_response = client.grant_ticket_to_member(member_id, ticket_id=ticket_id, num=1)
         member_ticket_id = ticket_response.get("data", {}).get("member_ticket", {}).get("id")
-        logger.info(f"Granted ticket, member_ticket_id: {member_ticket_id}")
+        logger.info(f"Granted ticket {ticket_id}, member_ticket_id: {member_ticket_id}")
     except HacomonoAPIError as e:
         # チケット付与に失敗した場合も続行（既存チケットがあるかも）
-        logger.warning(f"Failed to grant ticket: {e}")
+        logger.warning(f"Failed to grant ticket {ticket_id}: {e}")
         member_ticket_id = None
     
     return member_id, member_ticket_id
@@ -1498,11 +1503,13 @@ def create_reservation():
     
     studio_lesson_id = data["studio_lesson_id"]
     
-    # 0. レッスンの日時を取得して予約可能範囲をチェック
+    # 0. レッスンの日時を取得して予約可能範囲をチェック、プログラムIDも取得
+    lesson_program_id = None
     try:
         lesson_check = client.get_studio_lesson(studio_lesson_id)
         lesson_data = lesson_check.get("data", {}).get("studio_lesson", {})
         lesson_start_at = lesson_data.get("start_at")
+        lesson_program_id = lesson_data.get("program_id")
         
         if lesson_start_at:
             # ISO形式をdatetimeに変換
@@ -1518,7 +1525,28 @@ def create_reservation():
         logger.warning(f"Failed to validate lesson datetime: {e}")
         # 日時チェックに失敗しても続行（後のAPIで弾かれる）
     
-    # 1. ゲストメンバーを作成してチケットを付与
+    # 1. プログラムに紐づくチケットIDを取得
+    DEFAULT_TICKET_ID = 5  # Web予約用デフォルトチケット
+    ticket_id_to_grant = DEFAULT_TICKET_ID
+    
+    if lesson_program_id:
+        try:
+            program_response = client.get_program(lesson_program_id)
+            program = program_response.get("data", {}).get("program", {})
+            
+            # プログラムに紐づくチケットIDを取得（ticket_ids, consumable_ticket_ids などを確認）
+            program_ticket_ids = program.get("ticket_ids") or program.get("consumable_ticket_ids") or []
+            logger.info(f"Fixed slot program {lesson_program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}")
+            
+            if program_ticket_ids and len(program_ticket_ids) > 0:
+                ticket_id_to_grant = program_ticket_ids[0]
+                logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
+            else:
+                logger.info(f"No program-linked ticket found, using default: {ticket_id_to_grant}")
+        except Exception as e:
+            logger.warning(f"Failed to get program info for ticket: {e}")
+    
+    # 2. ゲストメンバーを作成してチケットを付与
     try:
         member_id, member_ticket_id = _create_guest_member(
             client=client,
@@ -1529,7 +1557,8 @@ def create_reservation():
             guest_note=data.get("guest_note", ""),
             gender=data.get("gender", 1),
             birthday=data.get("birthday", "2000-01-01"),
-            studio_id=data.get("studio_id", 2)
+            studio_id=data.get("studio_id", 2),
+            ticket_id=ticket_id_to_grant
         )
     except HacomonoAPIError as e:
         error_info = _parse_hacomono_error(e)
@@ -2181,14 +2210,35 @@ def create_choice_reservation():
     if not member_id:
         return jsonify({"error": "Failed to create guest member"}), 400
     
-    # 2. メンバーにチケットを付与（Web予約用チケット ID:5）
-    try:
-        ticket_response = client.grant_ticket_to_member(member_id, ticket_id=5, num=1)
-        logger.info(f"Granted ticket, member_ticket_id: {ticket_response.get('data', {}).get('member_ticket', {}).get('id')}")
-    except HacomonoAPIError as e:
-        logger.warning(f"Failed to grant ticket: {e}")
+    # 2. プログラム情報を取得してチケットIDを確認
+    program_response = client.get_program(program_id)
+    program = program_response.get("data", {}).get("program", {})
     
-    # 3. 空いているスタッフを取得（指定されていない場合）
+    # プログラムに紐づくチケットIDを取得（ticket_ids, consumable_ticket_ids などを確認）
+    program_ticket_ids = program.get("ticket_ids") or program.get("consumable_ticket_ids") or []
+    
+    # デバッグログ: プログラムのチケット関連フィールドを確認
+    logger.info(f"Program {program_id} ticket-related fields: ticket_ids={program.get('ticket_ids')}, consumable_ticket_ids={program.get('consumable_ticket_ids')}")
+    
+    # チケットIDを決定（プログラムに紐づくチケットがあればそれを使用、なければデフォルト）
+    DEFAULT_TICKET_ID = 5  # Web予約用デフォルトチケット
+    if program_ticket_ids and len(program_ticket_ids) > 0:
+        # プログラムに紐づくチケットがある場合は最初のものを使用
+        ticket_id_to_grant = program_ticket_ids[0]
+        logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
+    else:
+        # なければデフォルトのチケットIDを使用
+        ticket_id_to_grant = DEFAULT_TICKET_ID
+        logger.info(f"Using default ticket ID: {ticket_id_to_grant}")
+    
+    # 3. メンバーにチケットを付与
+    try:
+        ticket_response = client.grant_ticket_to_member(member_id, ticket_id=ticket_id_to_grant, num=1)
+        logger.info(f"Granted ticket {ticket_id_to_grant}, member_ticket_id: {ticket_response.get('data', {}).get('member_ticket', {}).get('id')}")
+    except HacomonoAPIError as e:
+        logger.warning(f"Failed to grant ticket {ticket_id_to_grant}: {e}")
+    
+    # 4. 空いているスタッフを取得（指定されていない場合）
     instructor_ids = data.get("instructor_ids")
     if not instructor_ids:
         # 指定された日時の空いているスタッフを取得
@@ -2198,10 +2248,6 @@ def create_choice_reservation():
             jst = ZoneInfo("Asia/Tokyo")
             start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
             date_str = start_datetime.strftime("%Y-%m-%d")
-            
-            # プログラム情報を取得して選択可能スタッフを確認
-            program_response = client.get_program(program_id)
-            program = program_response.get("data", {}).get("program", {})
             selectable_instructor_details = program.get("selectable_instructor_details", [])
             
             # 選択可能スタッフIDを取得（None = 全スタッフ選択可能）
