@@ -50,6 +50,9 @@ function FreeScheduleContent() {
   const studioTel = searchParams.get('studio_tel')
   const studioUrl = searchParams.get('studio_url')
   const studioEmail = searchParams.get('studio_email')
+  
+  // 支払い方法
+  const paymentType = searchParams.get('payment_type')
 
   // URLパラメータがある場合は初期化完了まで待つ
   const hasUrlParams = !!(initialStudioId && initialProgramId)
@@ -634,7 +637,31 @@ function FreeScheduleContent() {
     return rows
   }
 
-  const gridRows = generateGrid()
+  const allGridRows = generateGrid()
+  
+  // 営業時間外の行を除外（全日が outside_hours または holiday の行は表示しない）
+  const gridRows = allGridRows.filter(row => {
+    // 全スロットが営業時間外または休業日なら除外
+    const allOutsideOrHoliday = row.slots.every(slot => 
+      slot.unavailableReason === 'outside_hours' || slot.unavailableReason === 'holiday'
+    )
+    return !allOutsideOrHoliday
+  })
+
+  // 休業日を判定（その日の全スロットが holiday の場合は休業日）
+  const isDateHoliday = (dateIndex: number): boolean => {
+    if (gridRows.length === 0) return true
+    // 全ての行で、その日のスロットが holiday かチェック
+    return gridRows.every(row => {
+      const slot = row.slots[dateIndex]
+      return slot?.unavailableReason === 'holiday'
+    })
+  }
+
+  // 表示する日付のインデックス（休業日を除外）
+  const displayDateIndices = weekDates
+    .map((_, index) => index)
+    .filter(index => !isDateHoliday(index))
 
   // 予約可否チェック中のスロット
   const [checkingSlot, setCheckingSlot] = useState<string | null>(null)
@@ -678,6 +705,9 @@ function FreeScheduleContent() {
     if (studioTel) params.set('studio_tel', studioTel)
     if (studioUrl) params.set('studio_url', studioUrl)
     if (studioEmail) params.set('studio_email', studioEmail)
+    
+    // 支払い方法を引き継ぎ
+    if (paymentType) params.set('payment_type', paymentType)
     
     router.push(`/free-booking?${params.toString()}`)
   }
