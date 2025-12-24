@@ -352,46 +352,16 @@ function ReservationDetailContent() {
         </div>
       )}
 
-      {/* LINE Registration - LINE URLがある場合のみ表示 */}
+      {/* LINE Registration Image - LINE URLがある場合のみ表示 */}
       {lineUrl && !isCanceled && (
-        <div className="card bg-gradient-to-br from-[#06C755]/10 to-white border border-[#06C755]/30 mb-8 animate-fade-in-delay-2">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-[#06C755] rounded-lg flex items-center justify-center">
-              <img src="/LINE_Brand_icon.png" alt="LINE" className="w-6 h-6" />
-            </div>
-            <h3 className="font-display font-bold text-lg text-accent-800">
-              【重要】公式LINEの登録
-            </h3>
-          </div>
-          
-          <p className="text-sm text-accent-700 mb-4">
-            公式LINEにフルネームをお送りいただきますと、ご予約完了となります。
-          </p>
-          
-          <a
-            href={lineUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full flex items-center justify-center gap-3 py-4 px-6 rounded-xl font-bold text-lg bg-[#06C755] text-white shadow-[0_4px_12px_rgba(6,199,85,0.3)] hover:bg-[#00b000] hover:-translate-y-0.5 hover:shadow-[0_6px_16px_rgba(6,199,85,0.4)] transition-all duration-300 mb-4"
-          >
-            <img src="/LINE_Brand_icon.png" alt="LINE" className="w-7 h-7" />
-            公式LINEを登録
+        <div className="mb-8 animate-fade-in-delay-2">
+          <a href={lineUrl} target="_blank" rel="noopener noreferrer">
+            <img 
+              src="/line_register.png" 
+              alt="LINE受付サービス" 
+              className="w-full rounded-xl"
+            />
           </a>
-          
-          <ul className="space-y-2 text-sm text-accent-600">
-            <li className="flex items-start gap-2">
-              <span className="text-[#06C755] mt-0.5">※</span>
-              <span>下記内容をご確認の上、友だち追加をお願いします</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-[#06C755] mt-0.5">※</span>
-              <span>LINEをお持ちでない方は空メールをお送りくださいませ</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-[#06C755] mt-0.5">※</span>
-              <span>2日以内にご返信がない場合は自動キャンセルさせていただきますのでご了承ください</span>
-            </li>
-          </ul>
         </div>
       )}
 
@@ -422,9 +392,7 @@ function ReservationDetailContent() {
             </li>
             <li className="flex items-start gap-3">
               <span className="w-5 h-5 bg-amber-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                <svg className="w-3 h-3 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                </svg>
+                <span className="text-amber-600 text-xs font-bold">!</span>
               </span>
               <span>生理中でも施術は可能です</span>
             </li>
