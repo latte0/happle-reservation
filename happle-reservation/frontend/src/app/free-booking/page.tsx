@@ -423,7 +423,7 @@ function FreeBookingContent() {
             </button>
             <button
               onClick={handleSubmit}
-              disabled={submitting || (paymentType && !paymentConfirmed)}
+              disabled={submitting || !!(paymentType && !paymentConfirmed)}
               className="btn-primary w-full sm:w-1/2 order-1 sm:order-2 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {submitting ? (
