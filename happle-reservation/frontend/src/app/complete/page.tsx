@@ -93,17 +93,11 @@ function CompleteContent() {
     <div className="max-w-2xl mx-auto px-4 py-12">
       {/* Success Animation */}
       <div className="text-center mb-8 animate-fade-in">
-        <div className="w-24 h-24 bg-gradient-to-br from-green-400 to-green-500 rounded-full mx-auto mb-6 flex items-center justify-center shadow-lg shadow-green-500/30">
-          <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-          </svg>
-        </div>
-        <h1 className="font-display text-3xl font-bold text-accent-900 mb-3">
-          ご予約ありがとうございます
-        </h1>
-        <p className="text-accent-600">
-          ご予約が完了しました
-        </p>
+        <img 
+          src="/thanks_reservation.png" 
+          alt="ご予約ありがとうございます" 
+          className="mx-auto max-w-full"
+        />
       </div>
 
       {/* Reservation Details */}
@@ -167,6 +161,19 @@ function CompleteContent() {
         </div>
       </div>
 
+      {/* LINE Registration Image - LINE URLがある場合のみ表示 */}
+      {lineUrl && (
+        <div className="mb-8 animate-fade-in-delay-1">
+          <a href={lineUrl} target="_blank" rel="noopener noreferrer">
+            <img 
+              src="/line_register.png" 
+              alt="LINE受付サービス" 
+              className="w-full rounded-xl"
+            />
+          </a>
+        </div>
+      )}
+
       {/* Reservation Detail Link */}
       {reservationDetailUrl && (
         <div className="card bg-gradient-to-br from-green-50 to-white border border-green-100 mb-8 animate-fade-in-delay-1">
@@ -192,49 +199,6 @@ function CompleteContent() {
               </Link>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* LINE Registration - LINE URLがある場合のみ表示 */}
-      {lineUrl && (
-        <div className="card bg-gradient-to-br from-[#06C755]/10 to-white border border-[#06C755]/30 mb-8 animate-fade-in-delay-1">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-[#06C755] rounded-lg flex items-center justify-center">
-              <img src="/LINE_Brand_icon.png" alt="LINE" className="w-6 h-6" />
-            </div>
-            <h3 className="font-display font-bold text-lg text-accent-800">
-              【重要】公式LINEの登録
-            </h3>
-          </div>
-          
-          <p className="text-sm text-accent-700 mb-4">
-            公式LINEにフルネームをお送りいただきますと、ご予約完了となります。
-          </p>
-          
-          <a
-            href={lineUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full flex items-center justify-center gap-3 py-4 px-6 rounded-xl font-bold text-lg bg-[#06C755] text-white shadow-[0_4px_12px_rgba(6,199,85,0.3)] hover:bg-[#00b000] hover:-translate-y-0.5 hover:shadow-[0_6px_16px_rgba(6,199,85,0.4)] transition-all duration-300 mb-4"
-          >
-            <img src="/LINE_Brand_icon.png" alt="LINE" className="w-7 h-7" />
-            公式LINEを登録
-          </a>
-          
-          <ul className="space-y-2 text-sm text-accent-600">
-            <li className="flex items-start gap-2">
-              <span className="text-[#06C755] mt-0.5">※</span>
-              <span>下記内容をご確認の上、友だち追加をお願いします</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-[#06C755] mt-0.5">※</span>
-              <span>LINEをお持ちでない方は空メールをお送りくださいませ</span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-[#06C755] mt-0.5">※</span>
-              <span>2日以内にご返信がない場合は自動キャンセルさせていただきますのでご了承ください</span>
-            </li>
-          </ul>
         </div>
       )}
 
