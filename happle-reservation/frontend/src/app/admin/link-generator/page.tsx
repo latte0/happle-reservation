@@ -113,7 +113,7 @@ function LinkGeneratorContent() {
       // 並列で全ての部屋のスケジュールを取得
       const roomSchedules = await Promise.all(
         candidateRooms.map(async (room) => {
-          try {
+        try {
             const scheduleMap = await getChoiceScheduleRange(room.id, todayStr, weekEndStr)
             const todaySchedule = scheduleMap.get(todayStr)
             return { room, scheduleData: todaySchedule }
@@ -127,18 +127,18 @@ function LinkGeneratorContent() {
       for (const { scheduleData } of roomSchedules) {
         if (!scheduleData) continue
         const roomService = scheduleData.studio_room_service
-        
-        if (!roomService) continue
-        
-        // 適用期間のチェック
-        let isWithinPeriod = true
-        if (roomService.start_date && roomService.end_date) {
-          isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
-        }
-        
-        if (isWithinPeriod) {
-          validRoomService = roomService
-          break
+          
+          if (!roomService) continue
+          
+          // 適用期間のチェック
+          let isWithinPeriod = true
+          if (roomService.start_date && roomService.end_date) {
+            isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
+          }
+          
+          if (isWithinPeriod) {
+            validRoomService = roomService
+            break
         }
       }
       

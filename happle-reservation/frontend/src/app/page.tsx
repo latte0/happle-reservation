@@ -173,22 +173,22 @@ function FreeScheduleContent() {
         for (const { room, scheduleData, scheduleMap } of roomSchedules) {
           if (!scheduleData) continue
           const roomService = scheduleData.studio_room_service
-          
-          if (!roomService) continue
-          
-          // 適用期間のチェック（日付のみで比較）
-          // start_date, end_dateがない場合は常に有効とみなす
-          let isWithinPeriod = true
-          if (roomService.start_date && roomService.end_date) {
-            // 日付文字列で比較（yyyy-MM-dd形式）
-            isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
-          }
-          
-          if (isWithinPeriod) {
-            validRoom = room
-            validRoomService = roomService
+            
+            if (!roomService) continue
+            
+            // 適用期間のチェック（日付のみで比較）
+            // start_date, end_dateがない場合は常に有効とみなす
+            let isWithinPeriod = true
+            if (roomService.start_date && roomService.end_date) {
+              // 日付文字列で比較（yyyy-MM-dd形式）
+              isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
+            }
+            
+            if (isWithinPeriod) {
+              validRoom = room
+              validRoomService = roomService
             validScheduleMap = scheduleMap
-            break
+              break
           }
         }
         
@@ -659,13 +659,28 @@ function FreeScheduleContent() {
   const allGridRows = generateGrid()
   
   // 営業時間外の行を除外（全日が outside_hours または holiday の行は表示しない）
-  const gridRows = allGridRows.filter(row => {
+  let gridRows = allGridRows.filter(row => {
     // 全スロットが営業時間外または休業日なら除外
     const allOutsideOrHoliday = row.slots.every(slot => 
       slot.unavailableReason === 'outside_hours' || slot.unavailableReason === 'holiday'
     )
     return !allOutsideOrHoliday
   })
+
+  // 9:00〜10:00の時間帯に予約可能なスロットが1つもない場合、その時間帯の行を非表示にする
+  const isEarlyMorningTime = (time: string) => {
+    const hour = parseInt(time.split(':')[0])
+    return hour === 9  // 09:00, 09:15, 09:30, 09:45 など
+  }
+
+  const hasAvailableInEarlyMorning = gridRows.some(row => {
+    if (!isEarlyMorningTime(row.time)) return false
+    return row.slots.some(slot => slot.available)
+  })
+
+  if (!hasAvailableInEarlyMorning) {
+    gridRows = gridRows.filter(row => !isEarlyMorningTime(row.time))
+  }
 
   // 休業日を判定（その日の全スロットが holiday の場合は休業日）
   const isDateHoliday = (dateIndex: number): boolean => {

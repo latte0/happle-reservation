@@ -289,9 +289,9 @@ RENDER_API_KEY=$(grep "key:" ~/.render/cli.yaml | awk '{{print $2}}')
 BACKEND_ID="srv-d4tpkhumcj7s7384p62g"
 
 # 環境変数を更新
-curl -s -X PUT "https://api.render.com/v1/services/$BACKEND_ID/env-vars" \\
-  -H "Authorization: Bearer $RENDER_API_KEY" \\
-  -H "Content-Type: application/json" \\
+  curl -s -X PUT "https://api.render.com/v1/services/$BACKEND_ID/env-vars" \\
+    -H "Authorization: Bearer $RENDER_API_KEY" \\
+    -H "Content-Type: application/json" \\
   -d '[
     {{"key": "HACOMONO_ACCESS_TOKEN", "value": "{access_token}"}},
     {{"key": "HACOMONO_REFRESH_TOKEN", "value": "{refresh_token}"}}

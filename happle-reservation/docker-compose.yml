@@ -6,9 +6,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "5021:5021"
+      - "5011:5011"
     environment:
-      - PORT=5021
+      - PORT=5011
       - FLASK_ENV=development
       - HACOMONO_BRAND_CODE=happle
       - HACOMONO_CLIENT_ID=eGUjqThSvO2PofERi9fDHd5x3AzP29RVMSgtIL91JQA
