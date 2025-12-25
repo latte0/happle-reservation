@@ -1,0 +1,53 @@
+name: Refresh Cache
+
+on:
+  schedule:
+    # 5分ごとに実行（UTC）
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    # 手動実行も可能
+    inputs:
+      days:
+        description: 'Number of days to cache (default: 14)'
+        required: false
+        default: '14'
+        type: string
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Refresh cache
+        run: |
+          DAYS="${{ github.event.inputs.days || '14' }}"
+          
+          echo "Refreshing cache for ${DAYS} days..."
+          
+          # Render backend URL
+          API_BASE_URL="https://happle-reservation-backend.onrender.com"
+          
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "X-Cache-Refresh-Key: ${{ secrets.CACHE_REFRESH_SECRET_KEY }}" \
+            "${API_BASE_URL}/api/cache/refresh?days=${DAYS}")
+          
+          # レスポンスボディとHTTPステータスを分離
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          
+          echo "HTTP Status: ${HTTP_CODE}"
+          echo "Response: ${BODY}"
+          
+          # ステータスコードに応じて成功/失敗を判定
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✅ Cache refresh successful"
+            exit 0
+          elif [ "$HTTP_CODE" -eq 207 ]; then
+            echo "⚠️ Cache refresh partially successful"
+            exit 0
+          else
+            echo "❌ Cache refresh failed"
+            exit 1
+          fi
+

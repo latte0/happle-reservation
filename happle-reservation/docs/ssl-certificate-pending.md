@@ -93,3 +93,9 @@ dig @03.dnsv.jp www.reserve-now.jp CNAME +short
 
 
 
+
+
+
+
+
+

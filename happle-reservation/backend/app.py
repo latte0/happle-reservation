@@ -93,6 +93,112 @@ _choice_schedule_cache_time: dict = {}  # { "room_id:date": datetime }
 CHOICE_SCHEDULE_CACHE_TTL_SECONDS = 30  # 30秒間キャッシュ（予約状況は変わりやすい）
 
 
+# ==================== キャッシュ操作関数 ====================
+
+def invalidate_choice_schedule_cache(studio_room_id: int, date: str) -> bool:
+    """特定のchoice_scheduleキャッシュを無効化
+    
+    Args:
+        studio_room_id: スタジオルームID
+        date: 日付（YYYY-MM-DD形式）
+    
+    Returns:
+        bool: キャッシュが削除されたかどうか
+    """
+    global _choice_schedule_cache, _choice_schedule_cache_time
+    
+    cache_key = f"{studio_room_id}:{date}"
+    invalidated = False
+    
+    if cache_key in _choice_schedule_cache:
+        del _choice_schedule_cache[cache_key]
+        invalidated = True
+    if cache_key in _choice_schedule_cache_time:
+        del _choice_schedule_cache_time[cache_key]
+    
+    if invalidated:
+        logger.info(f"Invalidated choice schedule cache for {cache_key}")
+    
+    return invalidated
+
+
+def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14) -> dict:
+    """全studio_roomの指定日数分のchoice_scheduleをキャッシュにロード
+    
+    Args:
+        client: hacomono APIクライアント
+        days: キャッシュする日数（デフォルト14日）
+    
+    Returns:
+        dict: リフレッシュ結果の統計情報
+    """
+    global _choice_schedule_cache, _choice_schedule_cache_time
+    
+    start_time = datetime.now()
+    
+    # 全スタジオルームを取得
+    rooms = get_cached_studio_rooms(client)
+    # 自由枠（CHOICE）のルームのみを対象
+    # reservation_typeは文字列 "CHOICE" または数値 2 の場合がある
+    choice_rooms = [r for r in rooms if r.get("reservation_type") in ["CHOICE", 2]]
+    
+    if not choice_rooms:
+        logger.warning("No choice rooms found for cache refresh")
+        return {
+            "success": True,
+            "rooms_count": 0,
+            "dates_count": days,
+            "total_cached": 0,
+            "duration_seconds": 0
+        }
+    
+    today = datetime.now()
+    dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    
+    cached_count = 0
+    errors = []
+    
+    # 並列で全room x 全dateのスケジュールを取得
+    def fetch_schedule(room_id: int, date: str) -> tuple:
+        try:
+            schedule = get_cached_choice_schedule(client, room_id, date)
+            return (room_id, date, True, None)
+        except Exception as e:
+            return (room_id, date, False, str(e))
+    
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for room in choice_rooms:
+            room_id = room.get("id")
+            for date in dates:
+                futures.append(executor.submit(fetch_schedule, room_id, date))
+        
+        for future in as_completed(futures):
+            room_id, date, success, error = future.result()
+            if success:
+                cached_count += 1
+            else:
+                errors.append({"room_id": room_id, "date": date, "error": error})
+    
+    duration = (datetime.now() - start_time).total_seconds()
+    
+    result = {
+        "success": len(errors) == 0,
+        "rooms_count": len(choice_rooms),
+        "dates_count": days,
+        "total_cached": cached_count,
+        "errors_count": len(errors),
+        "duration_seconds": round(duration, 2)
+    }
+    
+    if errors:
+        result["errors"] = errors[:10]  # 最大10件のエラーを返す
+    
+    logger.info(f"Cache refresh completed: {cached_count} schedules cached in {duration:.2f}s")
+    
+    return result
+
+
 def get_cached_instructor_studio_map(client: HacomonoClient) -> dict:
     """スタッフのスタジオ紐付け情報をキャッシュ付きで取得
     
@@ -1118,6 +1224,99 @@ def send_email_log_to_slack(
 def health_check():
     """ヘルスチェック"""
     return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
+
+
+# ==================== キャッシュ管理 API ====================
+
+@app.route("/api/cache/refresh", methods=["POST"])
+def refresh_cache():
+    """キャッシュをリフレッシュ（内部用・GitHub Actions用）
+    
+    認証: X-Cache-Refresh-Key ヘッダーでシークレットキーを検証
+    
+    クエリパラメータ:
+        days: キャッシュする日数（デフォルト14日）
+    """
+    # シークレットキーで認証
+    secret_key = request.headers.get("X-Cache-Refresh-Key")
+    expected_key = os.environ.get("CACHE_REFRESH_SECRET_KEY")
+    
+    if not expected_key:
+        logger.warning("CACHE_REFRESH_SECRET_KEY is not set")
+        return jsonify({"error": "Cache refresh not configured"}), 503
+    
+    if secret_key != expected_key:
+        logger.warning("Invalid cache refresh key provided")
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    try:
+        client = get_hacomono_client()
+        days = request.args.get("days", 14, type=int)
+        
+        logger.info(f"Starting cache refresh for {days} days")
+        result = refresh_all_choice_schedule_cache(client, days=days)
+        
+        return jsonify({
+            "success": result["success"],
+            "message": f"Cache refresh completed: {result['total_cached']} schedules cached",
+            **result
+        }), 200 if result["success"] else 207  # 207 = Multi-Status (部分成功)
+    
+    except Exception as e:
+        logger.error(f"Cache refresh failed: {e}")
+        return jsonify({
+            "success": False,
+            "error": "Cache refresh failed",
+            "message": str(e)
+        }), 500
+
+
+@app.route("/api/cache/status", methods=["GET"])
+def cache_status():
+    """キャッシュ状態を確認（デバッグ用）
+    
+    認証: X-Cache-Refresh-Key ヘッダーでシークレットキーを検証
+    """
+    # シークレットキーで認証
+    secret_key = request.headers.get("X-Cache-Refresh-Key")
+    expected_key = os.environ.get("CACHE_REFRESH_SECRET_KEY")
+    
+    if not expected_key or secret_key != expected_key:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    now = datetime.now()
+    
+    # choice_scheduleキャッシュの状態
+    choice_schedule_entries = []
+    for cache_key, cached_time in _choice_schedule_cache_time.items():
+        age_seconds = (now - cached_time).total_seconds()
+        choice_schedule_entries.append({
+            "key": cache_key,
+            "age_seconds": round(age_seconds, 1),
+            "is_valid": age_seconds < CHOICE_SCHEDULE_CACHE_TTL_SECONDS
+        })
+    
+    return jsonify({
+        "timestamp": now.isoformat(),
+        "choice_schedule_cache": {
+            "count": len(_choice_schedule_cache),
+            "ttl_seconds": CHOICE_SCHEDULE_CACHE_TTL_SECONDS,
+            "entries": sorted(choice_schedule_entries, key=lambda x: x["key"])[:50]  # 最大50件
+        },
+        "studios_cache": {
+            "count": 1 if _studios_cache else 0,
+            "ttl_seconds": STUDIOS_CACHE_TTL_SECONDS,
+            "age_seconds": round((now - _studios_cache_time).total_seconds(), 1) if _studios_cache_time else None
+        },
+        "programs_cache": {
+            "count": len(_programs_cache_by_studio),
+            "ttl_seconds": PROGRAMS_CACHE_TTL_SECONDS
+        },
+        "studio_rooms_cache": {
+            "count": len(_studio_rooms_cache_by_studio),
+            "ttl_seconds": STUDIO_ROOMS_CACHE_TTL_SECONDS
+        }
+    })
 
 
 # ==================== 店舗 API ====================
@@ -2846,6 +3045,14 @@ def create_choice_reservation():
     
     # 店舗連絡先情報からLINE URLを取得（レスポンスに含める）
     line_url = studio_contact_info.get("line_url", "") if 'studio_contact_info' in locals() else data.get("line_url", "")
+    
+    # キャッシュを無効化（予約が入った日のスケジュールを更新するため）
+    try:
+        # start_atから日付を抽出
+        reservation_date_for_cache = start_at.split(" ")[0]  # "YYYY-MM-DD HH:mm:ss.fff" -> "YYYY-MM-DD"
+        invalidate_choice_schedule_cache(studio_room_id, reservation_date_for_cache)
+    except Exception as e:
+        logger.warning(f"Failed to invalidate cache: {e}")
     
     # Slack通知（成功）
     send_slack_notification(

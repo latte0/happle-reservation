@@ -32,6 +32,9 @@ services:
       # CORS設定
       - key: CORS_ORIGINS
         value: https://happle-reservation-frontend.onrender.com,https://reserve-now.jp,https://www.reserve-now.jp
+      # キャッシュリフレッシュAPI用シークレットキー
+      - key: CACHE_REFRESH_SECRET_KEY
+        sync: false
 
   # Frontend (Next.js with Docker)
   - type: web
