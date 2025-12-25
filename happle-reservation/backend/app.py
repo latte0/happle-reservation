@@ -8,6 +8,7 @@ import os
 import json
 import logging
 import hashlib
+import hmac
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -385,7 +386,7 @@ def refresh_choice_schedule_range_cache(client: HacomonoClient, studio_room_id: 
     return response_data
 
 
-def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, studio_ids: list = None) -> dict:
+def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, studio_ids: list = None, start_offset_days: int = 0) -> dict:
     """指定したstudio_roomの完全なスケジュールをキャッシュにロード
     
     choice-schedule-range形式で完全なデータをキャッシュ（フロントエンドと同じ形式）
@@ -394,6 +395,7 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, st
         client: hacomono APIクライアント
         days: キャッシュする日数（デフォルト14日）
         studio_ids: 対象の店舗IDリスト（Noneの場合は全店舗）
+        start_offset_days: 開始日のオフセット（0=今日から、7=来週から）
     
     Returns:
         dict: リフレッシュ結果の統計情報
@@ -424,9 +426,10 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, st
         }
     
     today = datetime.now()
-    date_from = today.strftime("%Y-%m-%d")
-    date_to = (today + timedelta(days=days-1)).strftime("%Y-%m-%d")
-    dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    start_date = today + timedelta(days=start_offset_days)
+    date_from = start_date.strftime("%Y-%m-%d")
+    date_to = (start_date + timedelta(days=days-1)).strftime("%Y-%m-%d")
+    dates = [(start_date + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
     
     cached_count = 0
     range_cached_count = 0
@@ -1613,6 +1616,157 @@ def cache_status():
             "ttl_seconds": STUDIO_ROOMS_CACHE_TTL_SECONDS
         }
     })
+
+
+# ==================== Webhook API ====================
+
+def verify_hacomono_webhook_signature(body: bytes, x_webhook_event: str, secret: str) -> tuple[bool, str]:
+    """hacomono Webhookの署名を検証
+    
+    Args:
+        body: リクエストボディ（バイト列）
+        x_webhook_event: X-Webhook-Event ヘッダーの値（JSON文字列）
+        secret: Webhookシークレット
+    
+    Returns:
+        (is_valid, error_message) のタプル
+    """
+    try:
+        # X-Webhook-Event ヘッダーをパース
+        event_data = json.loads(x_webhook_event)
+        timestamp = event_data.get("timestamp")
+        nonce = event_data.get("nonce")
+        signature = event_data.get("signature")
+        signature_algorithm = event_data.get("signature_algorithm", "HMAC-SHA256")
+        
+        if not all([timestamp, nonce, signature]):
+            return False, "Missing required fields in X-Webhook-Event"
+        
+        if signature_algorithm != "HMAC-SHA256":
+            return False, f"Unsupported signature algorithm: {signature_algorithm}"
+        
+        # タイムスタンプの検証（5分以内のリクエストのみ受け付け）
+        current_time = int(datetime.utcnow().timestamp())
+        if abs(current_time - timestamp) > 300:  # 5分 = 300秒
+            logger.warning(f"Webhook timestamp too old: {timestamp}, current: {current_time}")
+            return False, "Timestamp too old (possible replay attack)"
+        
+        # 署名シードを生成: body:timestamp:nonce
+        signature_seed = f"{body.decode('utf-8')}:{timestamp}:{nonce}"
+        
+        # HMAC-SHA256で署名を計算
+        expected_signature = hmac.new(
+            secret.encode('utf-8'),
+            signature_seed.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        # 署名を比較（タイミング攻撃対策）
+        if hmac.compare_digest(signature, expected_signature):
+            return True, ""
+        else:
+            logger.warning(f"Webhook signature mismatch: expected={expected_signature}, got={signature}")
+            return False, "Invalid signature"
+            
+    except json.JSONDecodeError as e:
+        return False, f"Invalid X-Webhook-Event JSON: {e}"
+    except Exception as e:
+        logger.error(f"Webhook signature verification error: {e}")
+        return False, f"Verification error: {e}"
+
+
+def refresh_cache_for_webhook():
+    """Webhookイベントに応じたキャッシュリフレッシュ（バックグラウンド実行用）
+    
+    予約関連のイベント（予約完了・変更・キャンセル）を受信した際に
+    全店舗の今週・来週のスケジュールキャッシュをリフレッシュする
+    
+    注意: フロントエンドは今週(0-6日)と来週(7-13日)を別々のキャッシュキーでリクエストするため、
+    14日間一括ではなく、今週・来週を分けてキャッシュを更新する必要がある
+    """
+    try:
+        client = get_hacomono_client()
+        
+        # フロントエンドのリクエストパターンに合わせて今週・来週を分けてキャッシュ
+        # 今週: today ~ today+6
+        result1 = refresh_all_choice_schedule_cache(client, days=7)
+        logger.info(f"Webhook cache refresh (this week) completed: {result1}")
+        
+        # 来週: today+7 ~ today+13
+        result2 = refresh_all_choice_schedule_cache(client, days=7, start_offset_days=7)
+        logger.info(f"Webhook cache refresh (next week) completed: {result2}")
+    except Exception as e:
+        logger.error(f"Webhook cache refresh failed: {e}")
+
+
+@app.route("/webhook", methods=["POST"])
+def hacomono_webhook():
+    """hacomono Webhook エンドポイント
+    
+    hacomonoから送信されるWebhookイベントを受信し、キャッシュをリフレッシュする。
+    予約関連イベント（予約完了・変更・キャンセル）のみが送信される前提のため、
+    イベント内容は解析せず、受信時に即座にキャッシュ更新をトリガーする。
+    
+    認証: X-Webhook-Event ヘッダーの署名を検証
+    環境変数: HACOMONO_WEBHOOK_SECRET にシークレットを設定
+    
+    開発環境:
+        URL: http://localhost:5011/webhook
+        シークレット: LgXlSZxYolYGqoPtAnGnJmMd1jSZOony
+    
+    本番環境:
+        URL: https://happle-reservation-backend.onrender.com/webhook
+        シークレット: EX9duM782dv8oKDXV6ik1bOUoIZkW8hX
+    """
+    # Webhookシークレットを取得
+    webhook_secret = os.environ.get("HACOMONO_WEBHOOK_SECRET")
+    
+    if not webhook_secret:
+        logger.warning("HACOMONO_WEBHOOK_SECRET is not set, signature verification skipped")
+    
+    # リクエストボディとヘッダーを取得
+    body = request.get_data()
+    x_webhook_event = request.headers.get("X-Webhook-Event")
+    
+    # 署名検証（シークレットが設定されている場合）
+    if webhook_secret and x_webhook_event:
+        is_valid, error_msg = verify_hacomono_webhook_signature(body, x_webhook_event, webhook_secret)
+        if not is_valid:
+            logger.warning(f"Webhook signature verification failed: {error_msg}")
+            return jsonify({
+                "success": False,
+                "error": "Unauthorized",
+                "message": error_msg
+            }), 401
+    elif webhook_secret and not x_webhook_event:
+        logger.warning("X-Webhook-Event header missing")
+        return jsonify({
+            "success": False,
+            "error": "Missing X-Webhook-Event header"
+        }), 400
+    
+    # イベントタイプをログ用に取得（オプション）
+    event_type = "unknown"
+    event_id = "unknown"
+    try:
+        data = json.loads(body)
+        event_type = data.get("type", "unknown")
+        event_id = data.get("id", "unknown")
+    except Exception:
+        pass
+    
+    logger.info(f"Received hacomono webhook: type={event_type}, id={event_id}")
+    
+    # バックグラウンドでキャッシュをリフレッシュ
+    from threading import Thread
+    Thread(target=refresh_cache_for_webhook, daemon=True).start()
+    
+    return jsonify({
+        "success": True,
+        "message": "Cache refresh triggered",
+        "event_type": event_type,
+        "event_id": event_id
+    }), 200
 
 
 # ==================== 店舗 API ====================
@@ -3527,17 +3681,17 @@ def get_choice_schedule():
             # 並列実行する関数を定義
             def fetch_studio_lessons():
                 """固定枠レッスンを取得"""
-            try:
-                lessons_response = client.get_studio_lessons(
-                    query={"studio_id": actual_studio_id},
-                    date_from=date,
-                    date_to=date,
-                    fetch_all=True
-                )
-                return lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
-            except Exception as e:
-                logger.warning(f"Failed to get fixed slot lessons: {e}")
-                return []
+                try:
+                    lessons_response = client.get_studio_lessons(
+                        query={"studio_id": actual_studio_id},
+                        date_from=date,
+                        date_to=date,
+                        fetch_all=True
+                    )
+                    return lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
+                except Exception as e:
+                    logger.warning(f"Failed to get fixed slot lessons: {e}")
+                    return []
             
             def fetch_shift_slots():
                 """予定ブロック（休憩ブロック）を取得"""

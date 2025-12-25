@@ -16,6 +16,7 @@ flowchart TB
     
     subgraph "バックエンド (Render)"
         API[Flask API]
+        WH[Webhook Endpoint<br/>/webhook]
         subgraph "インメモリキャッシュ"
             C1[studios_cache<br/>TTL: 10分]
             C2[programs_cache<br/>TTL: 5分]
@@ -27,15 +28,20 @@ flowchart TB
     
     subgraph "外部サービス"
         HACO[hacomono API]
+        HACO_WH[hacomono Webhook<br/>予約変更通知]
         GHA[GitHub Actions<br/>cron: 15分ごと]
     end
     
     FE -->|リクエスト| API
     API -->|キャッシュチェック| C1 & C2 & C3 & C4 & C5
     API -->|キャッシュミス| HACO
-    GHA -->|キャッシュリフレッシュ| API
+    HACO_WH -->|予約完了・変更・キャンセル| WH
+    WH -->|キャッシュリフレッシュ| API
+    GHA -->|定期キャッシュリフレッシュ| API
     
     style C5 fill:#f9f,stroke:#333,stroke-width:2px
+    style WH fill:#9f9,stroke:#333,stroke-width:2px
+    style HACO_WH fill:#9f9,stroke:#333,stroke-width:2px
 ```
 
 ### キャッシュ更新フロー
@@ -48,8 +54,18 @@ sequenceDiagram
     participant Cache as キャッシュ
     participant Haco as hacomono API
     participant GHA as GitHub Actions
+    participant Webhook as hacomono Webhook
     
-    Note over GHA: 15分ごとに実行
+    Note over Webhook: リアルタイム更新
+    Webhook->>API: POST /webhook
+    API->>Haco: 今週データ取得
+    Haco-->>API: スケジュールデータ
+    API->>Cache: 今週キャッシュ保存
+    API->>Haco: 来週データ取得
+    Haco-->>API: スケジュールデータ
+    API->>Cache: 来週キャッシュ保存
+    
+    Note over GHA: 15分ごと（バックアップ）
     GHA->>API: POST /api/cache/refresh
     API->>Haco: 今週・来週のデータ取得
     Haco-->>API: スケジュールデータ
@@ -142,7 +158,48 @@ gantt
 
 ## キャッシュ更新トリガー
 
-### 1. GitHub Actions (cron)
+### 1. hacomono Webhook（リアルタイム更新）
+
+```
+POST /webhook
+```
+
+hacomonoの管理画面で予約が変更された際に、Webhookでリアルタイムに通知を受け取りキャッシュを更新します。
+
+**対応イベントタイプ:**
+- `SCHEDULE_RESERVATION_RESERVE` - 予約完了
+- `SCHEDULE_RESERVATION_RESERVE_CHANGE` - 予約変更
+- `SCHEDULE_RESERVATION_CANCEL` - 予約キャンセル
+
+**セットアップ:**
+
+| 環境 | URL | シークレット |
+|------|-----|-------------|
+| 開発 | `http://localhost:5011/webhook` | `LgXlSZxYolYGqoPtAnGnJmMd1jSZOony` |
+| 本番 | `https://happle-reservation-backend.onrender.com/webhook` | `EX9duM782dv8oKDXV6ik1bOUoIZkW8hX` |
+
+1. hacomono管理画面でWebhook設定を作成
+2. URL: 上記表を参照
+3. 対象イベント: 予約完了、予約変更、予約キャンセル
+4. シークレットを環境変数 `HACOMONO_WEBHOOK_SECRET` に設定
+
+**署名検証:**
+- `X-Webhook-Event` ヘッダーのHMAC-SHA256署名を検証
+- タイムスタンプの鮮度チェック（5分以内）
+
+**キャッシュ更新:**
+- **対象**: 全CHOICEルームの今週・来週のスケジュール
+- フロントエンドのリクエストパターンに合わせて、今週(0-6日)と来週(7-13日)を**別々のキャッシュキー**で更新
+- これにより、フロントエンドからのリクエストが確実にキャッシュヒットする
+
+```python
+# 今週: today ~ today+6
+refresh_all_choice_schedule_cache(client, days=7)
+# 来週: today+7 ~ today+13
+refresh_all_choice_schedule_cache(client, days=7, start_offset_days=7)
+```
+
+### 2. GitHub Actions (cron)
 
 ```yaml
 schedule:
@@ -150,9 +207,9 @@ schedule:
 ```
 
 - **対象**: 指定した `studio_ids` の今週・来週のスケジュール
-- **目的**: 最初のユーザーも高速にアクセスできるようプリキャッシュ
+- **目的**: 最初のユーザーも高速にアクセスできるようプリキャッシュ、Webhookのバックアップ
 
-### 2. 予約完了時
+### 4. 予約完了時
 
 ```python
 # バックグラウンドでキャッシュリフレッシュ
@@ -162,7 +219,7 @@ Thread(target=refresh_cache_background, daemon=True).start()
 - **対象**: 予約が入った店舗ルームの今週・来週
 - **目的**: 予約状況の即時反映、次のユーザーの高速アクセス
 
-### 3. ユーザーリクエスト時（キャッシュミス）
+### 5. ユーザーリクエスト時（キャッシュミス）
 
 ```python
 # キャッシュミス時、APIから取得後に自動キャッシュ
@@ -322,4 +379,7 @@ schedule:
 | 2025-12-25 | 初版作成 |
 | 2025-12-25 | 週単位キャッシュ分割実装 |
 | 2025-12-25 | 予約完了時のキャッシュリフレッシュ実装 |
+| 2025-12-25 | hacomono Webhook対応（予約・休憩・ブロック変更のリアルタイム反映） |
+| 2025-12-25 | Webhookキャッシュ更新を今週・来週分割に修正（キャッシュキー一致のため） |
+
 
