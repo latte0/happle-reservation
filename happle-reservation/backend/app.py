@@ -1597,6 +1597,106 @@ def send_email_log_to_slack(
         logger.error(f"Unexpected error sending email log to Slack: {e}")
 
 
+def send_staff_notification_email(
+    reservation_id: int,
+    guest_name: str,
+    guest_email: str,
+    guest_phone: str,
+    studio_name: str,
+    program_name: str,
+    reservation_date: str,
+    reservation_time: str,
+    duration_minutes: int = 0,
+    price: int = 0,
+    instructor_names: str = "",
+    resource_names: str = ""
+) -> dict:
+    """店舗スタッフ向けの予約通知メールを送信
+    
+    環境変数 STAFF_NOTIFICATION_EMAIL に設定されたアドレスにメール送信
+    Slack通知と同じタイミングで呼び出される
+    
+    Args:
+        reservation_id: 予約ID
+        guest_name: お客様名
+        guest_email: お客様メールアドレス
+        guest_phone: お客様電話番号
+        studio_name: 店舗名
+        program_name: メニュー名
+        reservation_date: 予約日
+        reservation_time: 予約時間
+        duration_minutes: 所要時間（分）
+        price: 料金
+        instructor_names: 担当スタッフ名（カンマ区切り）
+        resource_names: 使用設備名（カンマ区切り）
+    
+    Returns:
+        dict: {"success": bool, "message_id": str or None, "error": str or None}
+    """
+    staff_email = os.environ.get("STAFF_NOTIFICATION_EMAIL")
+    
+    if not staff_email:
+        logger.info("STAFF_NOTIFICATION_EMAIL is not set, skipping staff notification email")
+        return {"success": True, "message_id": None, "error": "Not configured (skipped)"}
+    
+    # 件名
+    subject = f"【予約通知】{guest_name}様 - {reservation_date} {reservation_time}"
+    
+    # 本文
+    duration_text = f"{duration_minutes}分" if duration_minutes else "未設定"
+    price_text = f"¥{price:,}" if price else "未設定"
+    instructor_text = instructor_names if instructor_names else "未設定"
+    resource_text = resource_names if resource_names else "未設定"
+    
+    body_text = f"""【新規予約が入りました】
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+　予約情報
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+■ 予約ID: {reservation_id}
+■ 店舗: {studio_name}
+
+■ お客様情報
+　・お名前: {guest_name}様
+　・メール: {guest_email}
+　・電話番号: {guest_phone}
+
+■ 予約内容
+　・予約日: {reservation_date}
+　・予約時間: {reservation_time}
+　・メニュー: {program_name}
+　・所要時間: {duration_text}
+　・料金: {price_text}
+
+■ 担当
+　・スタッフ: {instructor_text}
+　・設備: {resource_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+このメールは予約システムから自動送信されています。
+"""
+    
+    try:
+        result = send_email_via_ses(
+            to_email=staff_email,
+            subject=subject,
+            body_text=body_text
+        )
+        
+        if result.get("success"):
+            logger.info(f"Staff notification email sent to {staff_email} for reservation {reservation_id}")
+        else:
+            logger.error(f"Failed to send staff notification email: {result.get('error')}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error sending staff notification email: {e}")
+        return {"success": False, "message_id": None, "error": str(e)}
+
+
 # ==================== ヘルスチェック ====================
 
 @app.route("/api/health", methods=["GET"])
@@ -2901,6 +3001,23 @@ def create_reservation():
         program_name=program_name
     )
     
+    # 店舗スタッフ向けメール通知
+    try:
+        send_staff_notification_email(
+            reservation_id=reservation_id,
+            guest_name=data.get("guest_name", ""),
+            guest_email=data.get("guest_email", ""),
+            guest_phone=data.get("guest_phone", ""),
+            studio_name=studio_name,
+            program_name=program_name,
+            reservation_date=reservation_date,
+            reservation_time=reservation_time,
+            duration_minutes=duration_minutes,
+            price=price
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send staff notification email: {e}")
+    
     return jsonify({
         "success": True,
         "reservation": {
@@ -3698,6 +3815,23 @@ def create_choice_reservation():
         reservation_time=reservation_time,
         program_name=program_name
     )
+    
+    # 店舗スタッフ向けメール通知
+    try:
+        send_staff_notification_email(
+            reservation_id=reservation_id,
+            guest_name=guest_name,
+            guest_email=guest_email,
+            guest_phone=guest_phone,
+            studio_name=studio_name,
+            program_name=program_name,
+            reservation_date=reservation_date,
+            reservation_time=reservation_time,
+            duration_minutes=duration_minutes,
+            price=price
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send staff notification email: {e}")
     
     return jsonify({
         "success": True,

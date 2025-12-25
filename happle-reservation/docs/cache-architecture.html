@@ -416,10 +416,12 @@ code {
     
     Note over Webhook: リアルタイム更新
     Webhook->>API: POST /webhook
-    API->>Cache: キャッシュ無効化
-    API->>Haco: 該当範囲のデータ取得
+    API->>Haco: 今週データ取得
     Haco-->>API: スケジュールデータ
-    API->>Cache: キャッシュ保存
+    API->>Cache: 今週キャッシュ保存
+    API->>Haco: 来週データ取得
+    Haco-->>API: スケジュールデータ
+    API->>Cache: 来週キャッシュ保存
     
     Note over GHA: 15分ごと（バックアップ）
     GHA->>API: POST /api/cache/refresh
@@ -533,6 +535,44 @@ code {
 - 4:2025-12-25:2025-12-31:none   # 今週 + program_idなし
 - 4:2026-01-01:2026-01-07:7      # 来週 + program_id=7
 </div></code></pre>
+<h3 id="%E3%82%AD%E3%83%A3%E3%83%83%E3%82%B7%E3%83%A5%E5%AF%BE%E8%B1%A1%E3%83%97%E3%83%AD%E3%82%B0%E3%83%A9%E3%83%A0%E3%81%AE%E9%81%B8%E5%AE%9A">キャッシュ対象プログラムの選定</h3>
+<p>フロントエンドで実際に選択可能なプログラムのみをキャッシュ対象とすることで、不要なAPIコールを削減しています。</p>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart TD
+    A[店舗のプログラム一覧] --> B{is_program_fully_configured?}
+    B -->|No| X[キャッシュ対象外]
+    B -->|Yes| C{selectable_program_type}
+    C -->|ALL| D[キャッシュ対象]
+    C -->|SELECTED| E{selectable_program_details<br/>に含まれる?}
+    E -->|Yes| D
+    E -->|No| X
+</div></code></pre>
+<p><strong><code>is_program_fully_configured</code> の判定条件:</strong></p>
+<ul>
+<li><code>has_selectable_instructors</code>: インストラクターが設定されている
+<ul>
+<li><code>selectable_instructor_details</code> が存在し、1件以上のIDが含まれる</li>
+</ul>
+</li>
+<li><code>has_selectable_resources</code>: リソース（設備）が設定されている
+<ul>
+<li><code>selectable_resource_details</code> が存在し、1件以上のIDが含まれる</li>
+</ul>
+</li>
+<li>両方を満たす場合のみ <code>True</code></li>
+</ul>
+<p><strong>フロントエンド側のフィルタリングと完全一致:</strong></p>
+<pre class="hljs"><code><div><span class="hljs-comment"># バックエンドのキャッシュ更新時</span>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">get_programs_for_cache</span><span class="hljs-params">(studio_id, room_service)</span>:</span>
+    <span class="hljs-comment"># 1. 予約可能なプログラム取得（インストラクター・リソース設定済み）</span>
+    reservable_programs = get_reservable_programs(client, studio_id)
+    
+    <span class="hljs-comment"># 2. room_serviceの設定に基づくフィルタリング</span>
+    <span class="hljs-keyword">if</span> room_service.get(<span class="hljs-string">"selectable_program_type"</span>) == <span class="hljs-string">"SELECTED"</span>:
+        selected_ids = room_service.get(<span class="hljs-string">"selectable_program_details"</span>, [])
+        <span class="hljs-keyword">return</span> [p <span class="hljs-keyword">for</span> p <span class="hljs-keyword">in</span> reservable_programs <span class="hljs-keyword">if</span> p[<span class="hljs-string">"id"</span>] <span class="hljs-keyword">in</span> selected_ids]
+    
+    <span class="hljs-keyword">return</span> reservable_programs  <span class="hljs-comment"># ALL の場合</span>
+</div></code></pre>
 <h3 id="%E3%83%95%E3%83%AD%E3%83%B3%E3%83%88%E3%82%A8%E3%83%B3%E3%83%89%E3%81%AE%E3%83%AA%E3%82%AF%E3%82%A8%E3%82%B9%E3%83%88%E3%83%91%E3%82%BF%E3%83%BC%E3%83%B3">フロントエンドのリクエストパターン</h3>
 <pre><code class="language-mermaid"><div class="mermaid">gantt
     title フロントエンドの週単位リクエスト
@@ -587,20 +627,45 @@ code {
 <li><code>X-Webhook-Event</code> ヘッダーのHMAC-SHA256署名を検証</li>
 <li>タイムスタンプの鮮度チェック（5分以内）</li>
 </ul>
+<p><strong>キャッシュ更新:</strong></p>
+<ul>
+<li><strong>対象</strong>: 全CHOICEルームの今週・来週のスケジュール</li>
+<li>フロントエンドのリクエストパターンに合わせて、今週(0-6日)と来週(7-13日)を<strong>別々のキャッシュキー</strong>で更新</li>
+<li><strong>予約可能なプログラムのみ</strong>をキャッシュ対象として、不要なAPIコールを削減</li>
+<li>これにより、フロントエンドからのリクエストが確実にキャッシュヒットする</li>
+</ul>
+<pre class="hljs"><code><div><span class="hljs-comment"># 今週: today ~ today+6（program_id=None + 予約可能プログラムごと）</span>
+refresh_all_choice_schedule_cache(client, days=<span class="hljs-number">7</span>)
+<span class="hljs-comment"># 来週: today+7 ~ today+13（program_id=None + 予約可能プログラムごと）</span>
+refresh_all_choice_schedule_cache(client, days=<span class="hljs-number">7</span>, start_offset_days=<span class="hljs-number">7</span>)
+
+<span class="hljs-comment"># 各ルームに対して、以下のキャッシュキーが作成される:</span>
+<span class="hljs-comment"># - room_id:date_from:date_to:none</span>
+<span class="hljs-comment"># - room_id:date_from:date_to:program_id_1</span>
+<span class="hljs-comment"># - room_id:date_from:date_to:program_id_2</span>
+<span class="hljs-comment"># - ... (予約可能なプログラム分)</span>
+</div></code></pre>
 <h3 id="2-github-actions-cron">2. GitHub Actions (cron)</h3>
 <pre class="hljs"><code><div><span class="hljs-attr">schedule:</span>
   <span class="hljs-bullet">-</span> <span class="hljs-attr">cron:</span> <span class="hljs-string">'*/15 * * * *'</span>  <span class="hljs-comment"># 15分ごと</span>
 </div></code></pre>
 <ul>
 <li><strong>対象</strong>: 指定した <code>studio_ids</code> の今週・来週のスケジュール</li>
+<li><strong>プログラム別</strong>: <code>program_id=None</code> + 各店舗の予約可能プログラムごとにキャッシュ更新</li>
 <li><strong>目的</strong>: 最初のユーザーも高速にアクセスできるようプリキャッシュ、Webhookのバックアップ</li>
 </ul>
+<pre class="hljs"><code><div><span class="hljs-comment"># 今週: today ~ today+6（予約可能プログラムごと）</span>
+refresh_all_choice_schedule_cache(client, days=<span class="hljs-number">7</span>, studio_ids=studio_ids)
+<span class="hljs-comment"># 来週: today+7 ~ today+13（予約可能プログラムごと）</span>
+refresh_all_choice_schedule_cache(client, days=<span class="hljs-number">7</span>, studio_ids=studio_ids, start_offset_days=<span class="hljs-number">7</span>)
+</div></code></pre>
 <h3 id="4-%E4%BA%88%E7%B4%84%E5%AE%8C%E4%BA%86%E6%99%82">4. 予約完了時</h3>
 <pre class="hljs"><code><div><span class="hljs-comment"># バックグラウンドでキャッシュリフレッシュ</span>
 Thread(target=refresh_cache_background, daemon=<span class="hljs-literal">True</span>).start()
 </div></code></pre>
 <ul>
 <li><strong>対象</strong>: 予約が入った店舗ルームの今週・来週</li>
+<li><strong>プログラム別</strong>: <code>program_id=None</code> + 店舗の予約可能プログラムごとにキャッシュ更新</li>
 <li><strong>目的</strong>: 予約状況の即時反映、次のユーザーの高速アクセス</li>
 </ul>
 <h3 id="5-%E3%83%A6%E3%83%BC%E3%82%B6%E3%83%BC%E3%83%AA%E3%82%AF%E3%82%A8%E3%82%B9%E3%83%88%E6%99%82%E3%82%AD%E3%83%A3%E3%83%83%E3%82%B7%E3%83%A5%E3%83%9F%E3%82%B9">5. ユーザーリクエスト時（キャッシュミス）</h3>
@@ -717,9 +782,10 @@ response_data = refresh_choice_schedule_range_cache(...)
 </table>
 <p><strong>現在のキャッシュサイズ見積もり</strong>:</p>
 <ul>
-<li>1店舗 × 2週間 × 2パターン（今週・来週）= 約4エントリ</li>
+<li>1店舗 × 2週間 × (1 + 予約可能プログラム数) = 約8-12エントリ（プログラム3つの場合）</li>
 <li>1エントリ ≈ 50-100KB</li>
-<li>10店舗で約4-8MB（Renderの無料プランでも問題なし）</li>
+<li>10店舗で約8-12MB（Renderの無料プランでも問題なし）</li>
+<li>※予約可能なプログラムのみをキャッシュするため、不要なエントリは生成されない</li>
 </ul>
 <h3 id="4-github-actions-%E3%81%AE%E5%88%B6%E9%99%90">4. GitHub Actions の制限</h3>
 <table>
@@ -839,6 +905,18 @@ curl -X POST -H <span class="hljs-string">"X-Cache-Refresh-Key: YOUR_SECRET_KEY"
 <tr>
 <td>2025-12-25</td>
 <td>hacomono Webhook対応（予約・休憩・ブロック変更のリアルタイム反映）</td>
+</tr>
+<tr>
+<td>2025-12-25</td>
+<td>Webhookキャッシュ更新を今週・来週分割に修正（キャッシュキー一致のため）</td>
+</tr>
+<tr>
+<td>2025-12-25</td>
+<td>キャッシュ対象を予約可能プログラムのみに最適化（フロントエンドと同一ロジック）</td>
+</tr>
+<tr>
+<td>2025-12-25</td>
+<td>cron側も今週・来週分割でキャッシュ更新（Webhook・予約完了時と統一）</td>
 </tr>
 </tbody>
 </table>
