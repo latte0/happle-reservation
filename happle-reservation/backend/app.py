@@ -92,11 +92,16 @@ _choice_schedule_cache: dict = {}  # { "room_id:date": schedule }
 _choice_schedule_cache_time: dict = {}  # { "room_id:date": datetime }
 CHOICE_SCHEDULE_CACHE_TTL_SECONDS = 900  # 15分間キャッシュ（GitHub Actions cronと同期）
 
+# choice-schedule-range キャッシュ（完全なレスポンス）
+_choice_schedule_range_cache: dict = {}  # { "room_id:from:to:program": response }
+_choice_schedule_range_cache_time: dict = {}  # { "room_id:from:to:program": datetime }
+CHOICE_SCHEDULE_RANGE_CACHE_TTL_SECONDS = 900  # 15分間キャッシュ
+
 
 # ==================== キャッシュ操作関数 ====================
 
 def invalidate_choice_schedule_cache(studio_room_id: int, date: str) -> bool:
-    """特定のchoice_scheduleキャッシュを無効化
+    """特定のchoice_scheduleキャッシュを無効化（rangeキャッシュも含む）
     
     Args:
         studio_room_id: スタジオルームID
@@ -106,6 +111,7 @@ def invalidate_choice_schedule_cache(studio_room_id: int, date: str) -> bool:
         bool: キャッシュが削除されたかどうか
     """
     global _choice_schedule_cache, _choice_schedule_cache_time
+    global _choice_schedule_range_cache, _choice_schedule_range_cache_time
     
     cache_key = f"{studio_room_id}:{date}"
     invalidated = False
@@ -115,6 +121,22 @@ def invalidate_choice_schedule_cache(studio_room_id: int, date: str) -> bool:
         invalidated = True
     if cache_key in _choice_schedule_cache_time:
         del _choice_schedule_cache_time[cache_key]
+    
+    # rangeキャッシュも該当日付を含むものを全て無効化
+    keys_to_delete = []
+    for key in _choice_schedule_range_cache.keys():
+        parts = key.split(":")
+        if len(parts) >= 3 and parts[0] == str(studio_room_id):
+            date_from = parts[1]
+            date_to = parts[2]
+            if date_from <= date <= date_to:
+                keys_to_delete.append(key)
+                invalidated = True
+    
+    for key in keys_to_delete:
+        _choice_schedule_range_cache.pop(key, None)
+        _choice_schedule_range_cache_time.pop(key, None)
+        logger.info(f"Invalidated range cache: {key}")
     
     if invalidated:
         logger.info(f"Invalidated choice schedule cache for {cache_key}")
@@ -1317,12 +1339,27 @@ def cache_status():
             "is_valid": age_seconds < CHOICE_SCHEDULE_CACHE_TTL_SECONDS
         })
     
+    # choice_schedule_rangeキャッシュの状態
+    range_cache_entries = []
+    for cache_key, cached_time in _choice_schedule_range_cache_time.items():
+        age_seconds = (now - cached_time).total_seconds()
+        range_cache_entries.append({
+            "key": cache_key,
+            "age_seconds": round(age_seconds, 1),
+            "is_valid": age_seconds < CHOICE_SCHEDULE_RANGE_CACHE_TTL_SECONDS
+        })
+    
     return jsonify({
         "timestamp": now.isoformat(),
         "choice_schedule_cache": {
             "count": len(_choice_schedule_cache),
             "ttl_seconds": CHOICE_SCHEDULE_CACHE_TTL_SECONDS,
             "entries": sorted(choice_schedule_entries, key=lambda x: x["key"])[:50]  # 最大50件
+        },
+        "choice_schedule_range_cache": {
+            "count": len(_choice_schedule_range_cache),
+            "ttl_seconds": CHOICE_SCHEDULE_RANGE_CACHE_TTL_SECONDS,
+            "entries": sorted(range_cache_entries, key=lambda x: x["key"])[:20]  # 最大20件
         },
         "studios_cache": {
             "count": 1 if _studios_cache else 0,
@@ -3414,8 +3451,9 @@ def get_choice_schedule_range():
     
     7日分のスケジュールを1回のリクエストで取得。
     studio-lessonsは範囲全体で1回だけ取得し、instructor_studio_mapはキャッシュを使用。
+    完全なレスポンスをキャッシュして高速化。
     """
-    client = get_hacomono_client()
+    global _choice_schedule_range_cache, _choice_schedule_range_cache_time
     
     studio_room_id = request.args.get("studio_room_id", type=int)
     program_id = request.args.get("program_id", type=int)  # プログラムID（1日上限チェック用）
@@ -3431,6 +3469,23 @@ def get_choice_schedule_range():
     if not date_to:
         # date_fromから7日後をデフォルトに
         date_to = (datetime.strptime(date_from, "%Y-%m-%d") + timedelta(days=6)).strftime("%Y-%m-%d")
+    
+    # キャッシュキーを生成
+    cache_key = f"{studio_room_id}:{date_from}:{date_to}:{program_id or 'none'}"
+    now = datetime.now()
+    
+    # キャッシュチェック
+    cached_data = _choice_schedule_range_cache.get(cache_key)
+    cached_time = _choice_schedule_range_cache_time.get(cache_key)
+    
+    if (cached_data is not None and 
+        cached_time is not None and
+        (now - cached_time).total_seconds() < CHOICE_SCHEDULE_RANGE_CACHE_TTL_SECONDS):
+        logger.debug(f"Using cached choice-schedule-range for {cache_key}")
+        return jsonify(cached_data)
+    
+    # キャッシュミス - APIから取得
+    client = get_hacomono_client()
     
     try:
         # 日付リストを生成
@@ -3659,11 +3714,19 @@ def get_choice_schedule_range():
             else:
                 result_schedules[date] = None
         
-        return jsonify({
+        # レスポンスを構築
+        response_data = {
             "schedules": result_schedules,
             "date_from": date_from,
             "date_to": date_to
-        })
+        }
+        
+        # キャッシュに保存
+        _choice_schedule_range_cache[cache_key] = response_data
+        _choice_schedule_range_cache_time[cache_key] = now
+        logger.info(f"Cached choice-schedule-range for {cache_key}")
+        
+        return jsonify(response_data)
     except Exception as e:
         logger.error(f"Failed to get choice schedule range: {e}")
         return jsonify({"error": "Failed to get schedule range", "message": str(e)}), 500
