@@ -3544,10 +3544,10 @@ def get_choice_schedule():
                     date_to=date,
                     fetch_all=True
                 )
-                    return lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
-                except Exception as e:
-                    logger.warning(f"Failed to get fixed slot lessons: {e}")
-                    return []
+                return lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
+            except Exception as e:
+                logger.warning(f"Failed to get fixed slot lessons: {e}")
+                return []
             
             def fetch_shift_slots():
                 """予定ブロック（休憩ブロック）を取得"""
