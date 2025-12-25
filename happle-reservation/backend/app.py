@@ -3534,10 +3534,10 @@ def get_choice_schedule():
                     date_to=date,
                     fetch_all=True
                 )
-                    return lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
-                except Exception as e:
-                    logger.warning(f"Failed to get fixed slot lessons: {e}")
-                    return []
+                return lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
+            except Exception as e:
+                logger.warning(f"Failed to get fixed slot lessons: {e}")
+                return []
             
             def fetch_shift_slots():
                 """予定ブロック（休憩ブロック）を取得"""
@@ -3594,78 +3594,78 @@ def get_choice_schedule():
             logger.debug(f"[PERF] parallel API calls: {time.perf_counter() - t2:.3f}s")
             
             # 固定枠レッスンを処理
-                for lesson in lessons:
-                    fixed_slot_lessons.append({
-                        "id": lesson.get("id"),
-                        "start_at": lesson.get("start_at"),
-                        "end_at": lesson.get("end_at"),
-                        "instructor_id": lesson.get("instructor_id"),
-                        "instructor_ids": lesson.get("instructor_ids", []),
-                        "program_id": lesson.get("program_id"),
-                        "studio_id": lesson.get("studio_id"),
-                        "capacity": lesson.get("capacity", 0)
+            for lesson in lessons:
+                fixed_slot_lessons.append({
+                    "id": lesson.get("id"),
+                    "start_at": lesson.get("start_at"),
+                    "end_at": lesson.get("end_at"),
+                    "instructor_id": lesson.get("instructor_id"),
+                    "instructor_ids": lesson.get("instructor_ids", []),
+                    "program_id": lesson.get("program_id"),
+                    "studio_id": lesson.get("studio_id"),
+                    "capacity": lesson.get("capacity", 0)
+                })
+                
+                # 固定枠レッスンの担当スタッフを予約として追加（前後のブロック時間を含む）
+                instructor_ids = lesson.get("instructor_ids", [])
+                if not instructor_ids and lesson.get("instructor_id"):
+                    instructor_ids = [lesson.get("instructor_id")]
+                
+                for instructor_id in instructor_ids:
+                    if instructor_id:
+                        start_at_str = lesson.get("start_at")
+                        end_at_str = lesson.get("end_at")
+                        
+                        if start_at_str and end_at_str:
+                            try:
+                                start_at = datetime.fromisoformat(start_at_str.replace("Z", "+00:00"))
+                                end_at = datetime.fromisoformat(end_at_str.replace("Z", "+00:00"))
+                                
+                                blocked_start = start_at - timedelta(minutes=FIXED_SLOT_BEFORE_INTERVAL_MINUTES)
+                                blocked_end = end_at + timedelta(minutes=FIXED_SLOT_AFTER_INTERVAL_MINUTES)
+                                
+                                fixed_slot_reservations.append({
+                                    "entity_id": instructor_id,
+                                    "entity_type": "INSTRUCTOR",
+                                    "start_at": blocked_start.isoformat(),
+                                    "end_at": blocked_end.isoformat(),
+                                    "original_start_at": start_at_str,
+                                    "original_end_at": end_at_str,
+                                    "studio_lesson_id": lesson.get("id"),
+                                    "reservation_type": "FIXED_SLOT_LESSON",
+                                    "before_interval": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
+                                    "after_interval": FIXED_SLOT_AFTER_INTERVAL_MINUTES
+                                })
+                            except Exception as e:
+                                logger.warning(f"Failed to parse lesson time: {e}")
+            
+            logger.info(f"Found {len(fixed_slot_lessons)} fixed slot lessons and {len(fixed_slot_reservations)} instructor blocks for {date}")
+            
+            # 予定ブロックをスタッフと設備に分類
+            for slot in shift_slots:
+                entity_type = slot.get("entity_type", "").upper()
+                if entity_type == "INSTRUCTOR":
+                    shift_slot_reservations.append({
+                        "entity_id": slot.get("entity_id"),
+                        "entity_type": "INSTRUCTOR",
+                        "start_at": slot.get("start_at"),
+                        "end_at": slot.get("end_at"),
+                        "reservation_type": "SHIFT_SLOT",
+                        "title": slot.get("title", ""),
+                        "description": slot.get("description", "")
                     })
-                    
-                    # 固定枠レッスンの担当スタッフを予約として追加（前後のブロック時間を含む）
-                    instructor_ids = lesson.get("instructor_ids", [])
-                    if not instructor_ids and lesson.get("instructor_id"):
-                        instructor_ids = [lesson.get("instructor_id")]
-                    
-                    for instructor_id in instructor_ids:
-                        if instructor_id:
-                            start_at_str = lesson.get("start_at")
-                            end_at_str = lesson.get("end_at")
-                            
-                            if start_at_str and end_at_str:
-                                try:
-                                    start_at = datetime.fromisoformat(start_at_str.replace("Z", "+00:00"))
-                                    end_at = datetime.fromisoformat(end_at_str.replace("Z", "+00:00"))
-                                    
-                                    blocked_start = start_at - timedelta(minutes=FIXED_SLOT_BEFORE_INTERVAL_MINUTES)
-                                    blocked_end = end_at + timedelta(minutes=FIXED_SLOT_AFTER_INTERVAL_MINUTES)
-                                    
-                                    fixed_slot_reservations.append({
-                                        "entity_id": instructor_id,
-                                        "entity_type": "INSTRUCTOR",
-                                        "start_at": blocked_start.isoformat(),
-                                        "end_at": blocked_end.isoformat(),
-                                        "original_start_at": start_at_str,
-                                        "original_end_at": end_at_str,
-                                        "studio_lesson_id": lesson.get("id"),
-                                        "reservation_type": "FIXED_SLOT_LESSON",
-                                        "before_interval": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
-                                        "after_interval": FIXED_SLOT_AFTER_INTERVAL_MINUTES
-                                    })
-                                except Exception as e:
-                                    logger.warning(f"Failed to parse lesson time: {e}")
-                
-                logger.info(f"Found {len(fixed_slot_lessons)} fixed slot lessons and {len(fixed_slot_reservations)} instructor blocks for {date}")
-                
-                # 予定ブロックをスタッフと設備に分類
-                for slot in shift_slots:
-                    entity_type = slot.get("entity_type", "").upper()
-                    if entity_type == "INSTRUCTOR":
-                        shift_slot_reservations.append({
-                            "entity_id": slot.get("entity_id"),
-                            "entity_type": "INSTRUCTOR",
-                            "start_at": slot.get("start_at"),
-                            "end_at": slot.get("end_at"),
-                            "reservation_type": "SHIFT_SLOT",
-                            "title": slot.get("title", ""),
-                            "description": slot.get("description", "")
-                        })
-                    elif entity_type == "RESOURCE":
-                        resource_shift_slot_reservations.append({
-                            "entity_id": slot.get("entity_id"),
-                            "entity_type": "RESOURCE",
-                            "start_at": slot.get("start_at"),
-                            "end_at": slot.get("end_at"),
-                            "reservation_type": "SHIFT_SLOT",
-                            "title": slot.get("title", ""),
-                            "description": slot.get("description", "")
-                        })
-                
-                logger.info(f"Found {len(shift_slots)} shift slots ({len(shift_slot_reservations)} instructor, {len(resource_shift_slot_reservations)} resource) for {date}")
+                elif entity_type == "RESOURCE":
+                    resource_shift_slot_reservations.append({
+                        "entity_id": slot.get("entity_id"),
+                        "entity_type": "RESOURCE",
+                        "start_at": slot.get("start_at"),
+                        "end_at": slot.get("end_at"),
+                        "reservation_type": "SHIFT_SLOT",
+                        "title": slot.get("title", ""),
+                        "description": slot.get("description", "")
+                    })
+            
+            logger.info(f"Found {len(shift_slots)} shift slots ({len(shift_slot_reservations)} instructor, {len(resource_shift_slot_reservations)} resource) for {date}")
             if program_id:
                 logger.info(f"Program {program_id} has {program_reservation_count} reservations on {date}")
         
