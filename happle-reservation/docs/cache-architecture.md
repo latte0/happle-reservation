@@ -142,6 +142,43 @@ sequenceDiagram
 - 4:2026-01-01:2026-01-07:7      # 来週 + program_id=7
 ```
 
+### キャッシュ対象プログラムの選定
+
+フロントエンドで実際に選択可能なプログラムのみをキャッシュ対象とすることで、不要なAPIコールを削減しています。
+
+```mermaid
+flowchart TD
+    A[店舗のプログラム一覧] --> B{is_program_fully_configured?}
+    B -->|No| X[キャッシュ対象外]
+    B -->|Yes| C{selectable_program_type}
+    C -->|ALL| D[キャッシュ対象]
+    C -->|SELECTED| E{selectable_program_details<br/>に含まれる?}
+    E -->|Yes| D
+    E -->|No| X
+```
+
+**`is_program_fully_configured` の判定条件:**
+- `has_selectable_instructors`: インストラクターが設定されている
+  - `selectable_instructor_details` が存在し、1件以上のIDが含まれる
+- `has_selectable_resources`: リソース（設備）が設定されている
+  - `selectable_resource_details` が存在し、1件以上のIDが含まれる
+- 両方を満たす場合のみ `True`
+
+**フロントエンド側のフィルタリングと完全一致:**
+```python
+# バックエンドのキャッシュ更新時
+def get_programs_for_cache(studio_id, room_service):
+    # 1. 予約可能なプログラム取得（インストラクター・リソース設定済み）
+    reservable_programs = get_reservable_programs(client, studio_id)
+    
+    # 2. room_serviceの設定に基づくフィルタリング
+    if room_service.get("selectable_program_type") == "SELECTED":
+        selected_ids = room_service.get("selectable_program_details", [])
+        return [p for p in reservable_programs if p["id"] in selected_ids]
+    
+    return reservable_programs  # ALL の場合
+```
+
 ### フロントエンドのリクエストパターン
 
 ```mermaid
@@ -190,13 +227,20 @@ hacomonoの管理画面で予約が変更された際に、Webhookでリアル�
 **キャッシュ更新:**
 - **対象**: 全CHOICEルームの今週・来週のスケジュール
 - フロントエンドのリクエストパターンに合わせて、今週(0-6日)と来週(7-13日)を**別々のキャッシュキー**で更新
+- **予約可能なプログラムのみ**をキャッシュ対象として、不要なAPIコールを削減
 - これにより、フロントエンドからのリクエストが確実にキャッシュヒットする
 
 ```python
-# 今週: today ~ today+6
+# 今週: today ~ today+6（program_id=None + 予約可能プログラムごと）
 refresh_all_choice_schedule_cache(client, days=7)
-# 来週: today+7 ~ today+13
+# 来週: today+7 ~ today+13（program_id=None + 予約可能プログラムごと）
 refresh_all_choice_schedule_cache(client, days=7, start_offset_days=7)
+
+# 各ルームに対して、以下のキャッシュキーが作成される:
+# - room_id:date_from:date_to:none
+# - room_id:date_from:date_to:program_id_1
+# - room_id:date_from:date_to:program_id_2
+# - ... (予約可能なプログラム分)
 ```
 
 ### 2. GitHub Actions (cron)
@@ -207,7 +251,15 @@ schedule:
 ```
 
 - **対象**: 指定した `studio_ids` の今週・来週のスケジュール
+- **プログラム別**: `program_id=None` + 各店舗の予約可能プログラムごとにキャッシュ更新
 - **目的**: 最初のユーザーも高速にアクセスできるようプリキャッシュ、Webhookのバックアップ
+
+```python
+# 今週: today ~ today+6（予約可能プログラムごと）
+refresh_all_choice_schedule_cache(client, days=7, studio_ids=studio_ids)
+# 来週: today+7 ~ today+13（予約可能プログラムごと）
+refresh_all_choice_schedule_cache(client, days=7, studio_ids=studio_ids, start_offset_days=7)
+```
 
 ### 4. 予約完了時
 
@@ -217,6 +269,7 @@ Thread(target=refresh_cache_background, daemon=True).start()
 ```
 
 - **対象**: 予約が入った店舗ルームの今週・来週
+- **プログラム別**: `program_id=None` + 店舗の予約可能プログラムごとにキャッシュ更新
 - **目的**: 予約状況の即時反映、次のユーザーの高速アクセス
 
 ### 5. ユーザーリクエスト時（キャッシュミス）
@@ -282,9 +335,10 @@ flowchart LR
 | キャッシュ肥大化 | メモリ不足 | studio_ids指定で対象店舗を限定 |
 
 **現在のキャッシュサイズ見積もり**:
-- 1店舗 × 2週間 × 2パターン（今週・来週）= 約4エントリ
+- 1店舗 × 2週間 × (1 + 予約可能プログラム数) = 約8-12エントリ（プログラム3つの場合）
 - 1エントリ ≈ 50-100KB
-- 10店舗で約4-8MB（Renderの無料プランでも問題なし）
+- 10店舗で約8-12MB（Renderの無料プランでも問題なし）
+- ※予約可能なプログラムのみをキャッシュするため、不要なエントリは生成されない
 
 ### 4. GitHub Actions の制限
 
@@ -381,5 +435,7 @@ schedule:
 | 2025-12-25 | 予約完了時のキャッシュリフレッシュ実装 |
 | 2025-12-25 | hacomono Webhook対応（予約・休憩・ブロック変更のリアルタイム反映） |
 | 2025-12-25 | Webhookキャッシュ更新を今週・来週分割に修正（キャッシュキー一致のため） |
+| 2025-12-25 | キャッシュ対象を予約可能プログラムのみに最適化（フロントエンドと同一ロジック） |
+| 2025-12-25 | cron側も今週・来週分割でキャッシュ更新（Webhook・予約完了時と統一） |
 
 

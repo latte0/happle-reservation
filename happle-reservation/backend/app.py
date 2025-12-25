@@ -1644,13 +1644,28 @@ def refresh_cache():
                 return jsonify({"error": "Invalid studio_ids format. Use comma-separated integers."}), 400
         
         logger.info(f"Starting cache refresh for {days} days, studio_ids={studio_ids}")
-        result = refresh_all_choice_schedule_cache(client, days=days, studio_ids=studio_ids)
+        
+        # フロントエンドのリクエストパターンに合わせて今週・来週を別々に更新
+        # これにより、キャッシュキーが完全一致してキャッシュヒット率が向上する
+        result_this_week = refresh_all_choice_schedule_cache(client, days=7, studio_ids=studio_ids)
+        logger.info(f"This week cache refresh completed: {result_this_week['total_cached']} schedules cached")
+        
+        result_next_week = refresh_all_choice_schedule_cache(client, days=7, studio_ids=studio_ids, start_offset_days=7)
+        logger.info(f"Next week cache refresh completed: {result_next_week['total_cached']} schedules cached")
+        
+        # 結果を集約
+        combined_result = {
+            "success": result_this_week["success"] and result_next_week["success"],
+            "total_cached": result_this_week["total_cached"] + result_next_week["total_cached"],
+            "this_week": result_this_week,
+            "next_week": result_next_week
+        }
         
         return jsonify({
-            "success": result["success"],
-            "message": f"Cache refresh completed: {result['total_cached']} schedules cached",
-            **result
-        }), 200 if result["success"] else 207  # 207 = Multi-Status (部分成功)
+            "success": combined_result["success"],
+            "message": f"Cache refresh completed: {combined_result['total_cached']} schedules cached (this week: {result_this_week['total_cached']}, next week: {result_next_week['total_cached']})",
+            **combined_result
+        }), 200 if combined_result["success"] else 207  # 207 = Multi-Status (部分成功)
     
     except Exception as e:
         logger.error(f"Cache refresh failed: {e}")
