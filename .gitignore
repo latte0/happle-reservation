@@ -50,3 +50,6 @@ happle-reservation/backend/logs/
 
 
 
+
+# Sensitive token files
+hacomono_token*.json

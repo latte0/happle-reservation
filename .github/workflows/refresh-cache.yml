@@ -2,8 +2,8 @@ name: Refresh Cache
 
 on:
   schedule:
-    # 5分ごとに実行（UTC）
-    - cron: '*/5 * * * *'
+    # 15分ごとに実行（UTC）- 無料枠節約
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     # 手動実行も可能
     inputs:
@@ -11,6 +11,11 @@ on:
         description: 'Number of days to cache (default: 14)'
         required: false
         default: '14'
+        type: string
+      studio_ids:
+        description: 'Target studio IDs (comma-separated, e.g., 4,5,6). Empty = all studios'
+        required: false
+        default: '4'
         type: string
 
 jobs:
@@ -22,15 +27,22 @@ jobs:
       - name: Refresh cache
         run: |
           DAYS="${{ github.event.inputs.days || '14' }}"
+          STUDIO_IDS="${{ github.event.inputs.studio_ids || '4' }}"
           
-          echo "Refreshing cache for ${DAYS} days..."
+          echo "Refreshing cache for ${DAYS} days, studio_ids=${STUDIO_IDS}..."
           
           # Render backend URL
           API_BASE_URL="https://happle-reservation-backend.onrender.com"
           
+          # Build query params
+          QUERY="days=${DAYS}"
+          if [ -n "$STUDIO_IDS" ]; then
+            QUERY="${QUERY}&studio_ids=${STUDIO_IDS}"
+          fi
+          
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             -H "X-Cache-Refresh-Key: ${{ secrets.CACHE_REFRESH_SECRET_KEY }}" \
-            "${API_BASE_URL}/api/cache/refresh?days=${DAYS}")
+            "${API_BASE_URL}/api/cache/refresh?${QUERY}")
           
           # レスポンスボディとHTTPステータスを分離
           HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)

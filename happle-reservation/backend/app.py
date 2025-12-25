@@ -122,12 +122,13 @@ def invalidate_choice_schedule_cache(studio_room_id: int, date: str) -> bool:
     return invalidated
 
 
-def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14) -> dict:
-    """全studio_roomの指定日数分のchoice_scheduleをキャッシュにロード
+def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, studio_ids: list = None) -> dict:
+    """指定したstudio_roomの指定日数分のchoice_scheduleをキャッシュにロード
     
     Args:
         client: hacomono APIクライアント
         days: キャッシュする日数（デフォルト14日）
+        studio_ids: 対象の店舗IDリスト（Noneの場合は全店舗）
     
     Returns:
         dict: リフレッシュ結果の統計情報
@@ -141,6 +142,11 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14) ->
     # 自由枠（CHOICE）のルームのみを対象
     # reservation_typeは文字列 "CHOICE" または数値 2 の場合がある
     choice_rooms = [r for r in rooms if r.get("reservation_type") in ["CHOICE", 2]]
+    
+    # studio_idsが指定されている場合、対象店舗のルームのみにフィルタリング
+    if studio_ids:
+        choice_rooms = [r for r in choice_rooms if r.get("studio_id") in studio_ids]
+        logger.info(f"Filtering rooms by studio_ids: {studio_ids}, found {len(choice_rooms)} rooms")
     
     if not choice_rooms:
         logger.warning("No choice rooms found for cache refresh")
@@ -182,8 +188,12 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14) ->
     
     duration = (datetime.now() - start_time).total_seconds()
     
+    # 対象店舗IDのリストを作成
+    target_studio_ids = list(set(r.get("studio_id") for r in choice_rooms))
+    
     result = {
         "success": len(errors) == 0,
+        "studio_ids": studio_ids if studio_ids else target_studio_ids,
         "rooms_count": len(choice_rooms),
         "dates_count": days,
         "total_cached": cached_count,
@@ -194,7 +204,7 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14) ->
     if errors:
         result["errors"] = errors[:10]  # 最大10件のエラーを返す
     
-    logger.info(f"Cache refresh completed: {cached_count} schedules cached in {duration:.2f}s")
+    logger.info(f"Cache refresh completed: {cached_count} schedules cached in {duration:.2f}s for studio_ids={studio_ids}")
     
     return result
 
@@ -1236,6 +1246,7 @@ def refresh_cache():
     
     クエリパラメータ:
         days: キャッシュする日数（デフォルト14日）
+        studio_ids: 対象店舗ID（カンマ区切り、例: 4,5,6）指定がない場合は全店舗
     """
     # シークレットキーで認証
     secret_key = request.headers.get("X-Cache-Refresh-Key")
@@ -1253,8 +1264,18 @@ def refresh_cache():
         client = get_hacomono_client()
         days = request.args.get("days", 14, type=int)
         
-        logger.info(f"Starting cache refresh for {days} days")
-        result = refresh_all_choice_schedule_cache(client, days=days)
+        # studio_idsパラメータをパース（カンマ区切り）
+        studio_ids_param = request.args.get("studio_ids", None)
+        studio_ids = None
+        if studio_ids_param:
+            try:
+                studio_ids = [int(sid.strip()) for sid in studio_ids_param.split(",")]
+                logger.info(f"Cache refresh targeting studio_ids: {studio_ids}")
+            except ValueError:
+                return jsonify({"error": "Invalid studio_ids format. Use comma-separated integers."}), 400
+        
+        logger.info(f"Starting cache refresh for {days} days, studio_ids={studio_ids}")
+        result = refresh_all_choice_schedule_cache(client, days=days, studio_ids=studio_ids)
         
         return jsonify({
             "success": result["success"],
