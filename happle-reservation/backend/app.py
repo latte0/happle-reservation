@@ -2815,7 +2815,15 @@ FIXED_SLOT_AFTER_INTERVAL_MINUTES = 30
 @app.route("/api/choice-schedule", methods=["GET"])
 @handle_errors
 def get_choice_schedule():
-    """自由枠予約スケジュールを取得（固定枠レッスン情報も含む）"""
+    """自由枠予約スケジュールを取得（固定枠レッスン情報も含む）
+    
+    【パフォーマンス最適化】
+    - hacomono APIへの複数リクエストを並列実行（ThreadPoolExecutor使用）
+    - キャッシュ可能なデータ（instructors, resources）は60秒間キャッシュ
+    """
+    import time
+    start_time = time.perf_counter()
+    
     client = get_hacomono_client()
     
     studio_room_id = request.args.get("studio_room_id", type=int)
@@ -2830,17 +2838,16 @@ def get_choice_schedule():
         date = datetime.now().strftime("%Y-%m-%d")
     
     try:
-        # 自由枠スケジュールを取得
+        # 1. 自由枠スケジュールを取得（これは最初に必要 - studio_idを取得するため）
+        t1 = time.perf_counter()
         response = client.get_choice_schedule(studio_room_id, date)
         schedule = response.get("data", {}).get("schedule", {})
+        logger.debug(f"[PERF] get_choice_schedule: {time.perf_counter() - t1:.3f}s")
         
         # デバッグ: スケジュールレスポンスの構造を確認（休憩ブロック情報の有無を確認）
         logger.debug(f"Schedule response keys: {list(schedule.keys())}")
         if "reservation_assign_instructor" in schedule:
             logger.debug(f"reservation_assign_instructor count: {len(schedule.get('reservation_assign_instructor', []))}")
-            # 最初の数件の予約情報をログ出力（reservation_typeを確認）
-            for i, res in enumerate(schedule.get("reservation_assign_instructor", [])[:5]):
-                logger.debug(f"Reservation {i}: entity_id={res.get('entity_id')}, reservation_type={res.get('reservation_type')}, start_at={res.get('start_at')}, end_at={res.get('end_at')}")
         
         # studio_idを取得（スケジュールレスポンスまたはパラメータから）
         actual_studio_id = studio_id
@@ -2848,109 +2855,161 @@ def get_choice_schedule():
             studio_room = schedule.get("studio_room_service", {})
             actual_studio_id = studio_room.get("studio_id") if studio_room else None
         
-        # 固定枠レッスン情報を取得
+        # 2. 並列で複数のAPIを呼び出し（パフォーマンス最適化）
         fixed_slot_lessons = []
         fixed_slot_reservations = []
-        
-        if actual_studio_id:
-            try:
-                # 該当日の固定枠レッスンを取得
-                lessons_response = client.get_studio_lessons(
-                    query={"studio_id": actual_studio_id},
-                    date_from=date,
-                    date_to=date,
-                    fetch_all=True
-                )
-                lessons = lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
-                
-                for lesson in lessons:
-                    fixed_slot_lessons.append({
-                        "id": lesson.get("id"),
-                        "start_at": lesson.get("start_at"),
-                        "end_at": lesson.get("end_at"),
-                        "instructor_id": lesson.get("instructor_id"),
-                        "instructor_ids": lesson.get("instructor_ids", []),
-                        "program_id": lesson.get("program_id"),
-                        "studio_id": lesson.get("studio_id"),
-                        "capacity": lesson.get("capacity", 0)
-                    })
-                    
-                    # 固定枠レッスンの担当スタッフを予約として追加（前後のブロック時間を含む）
-                    instructor_ids = lesson.get("instructor_ids", [])
-                    if not instructor_ids and lesson.get("instructor_id"):
-                        instructor_ids = [lesson.get("instructor_id")]
-                    
-                    for instructor_id in instructor_ids:
-                        if instructor_id:
-                            # 前後のインターバルを含めた時間をブロック
-                            start_at_str = lesson.get("start_at")
-                            end_at_str = lesson.get("end_at")
-                            
-                            if start_at_str and end_at_str:
-                                try:
-                                    start_at = datetime.fromisoformat(start_at_str.replace("Z", "+00:00"))
-                                    end_at = datetime.fromisoformat(end_at_str.replace("Z", "+00:00"))
-                                    
-                                    # 前後のブロック時間を追加
-                                    blocked_start = start_at - timedelta(minutes=FIXED_SLOT_BEFORE_INTERVAL_MINUTES)
-                                    blocked_end = end_at + timedelta(minutes=FIXED_SLOT_AFTER_INTERVAL_MINUTES)
-                                    
-                                    fixed_slot_reservations.append({
-                                        "entity_id": instructor_id,
-                                        "entity_type": "INSTRUCTOR",
-                                        "start_at": blocked_start.isoformat(),
-                                        "end_at": blocked_end.isoformat(),
-                                        "original_start_at": start_at_str,
-                                        "original_end_at": end_at_str,
-                                        "studio_lesson_id": lesson.get("id"),
-                                        "reservation_type": "FIXED_SLOT_LESSON",
-                                        "before_interval": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
-                                        "after_interval": FIXED_SLOT_AFTER_INTERVAL_MINUTES
-                                    })
-                                except Exception as e:
-                                    logger.warning(f"Failed to parse lesson time: {e}")
-                
-                logger.info(f"Found {len(fixed_slot_lessons)} fixed slot lessons and {len(fixed_slot_reservations)} instructor blocks for {date}")
-            except Exception as e:
-                logger.warning(f"Failed to get fixed slot lessons: {e}")
-        
-        # 予定ブロック（休憩ブロック）を取得
         shift_slots = []
         shift_slot_reservations = []
+        resource_shift_slot_reservations = []
+        instructor_studio_map = {}
+        resources_info = {}
+        program_reservation_count = 0
+        
         if actual_studio_id:
-            try:
-                shift_slots_response = client.get_shift_slots({"studio_id": actual_studio_id, "date": date})
-                shift_slots_data = shift_slots_response.get("data", {}).get("shift_slots", {})
-                shift_slots = shift_slots_data.get("list", []) if isinstance(shift_slots_data, dict) else shift_slots_data
+            # 並列実行する関数を定義
+            def fetch_studio_lessons():
+                """固定枠レッスンを取得"""
+                try:
+                    lessons_response = client.get_studio_lessons(
+                        query={"studio_id": actual_studio_id},
+                        date_from=date,
+                        date_to=date,
+                        fetch_all=True
+                    )
+                    return lessons_response.get("data", {}).get("studio_lessons", {}).get("list", [])
+                except Exception as e:
+                    logger.warning(f"Failed to get fixed slot lessons: {e}")
+                    return []
+            
+            def fetch_shift_slots():
+                """予定ブロック（休憩ブロック）を取得"""
+                try:
+                    shift_slots_response = client.get_shift_slots({"studio_id": actual_studio_id, "date": date})
+                    shift_slots_data = shift_slots_response.get("data", {}).get("shift_slots", {})
+                    return shift_slots_data.get("list", []) if isinstance(shift_slots_data, dict) else shift_slots_data
+                except Exception as e:
+                    logger.warning(f"Failed to get shift slots: {e}")
+                    return []
+            
+            def fetch_instructor_studio_map():
+                """スタッフのスタジオ紐付け情報を取得（キャッシュ付き）"""
+                return get_cached_instructor_studio_map(client)
+            
+            def fetch_resources_info():
+                """設備情報を取得（キャッシュ付き）"""
+                return get_cached_resources(client, actual_studio_id)
+            
+            def fetch_program_reservations():
+                """プログラムの1日の予約数を取得"""
+                if not program_id:
+                    return 0
+                try:
+                    reservations_response = client.get_reservations({
+                        "program_id": program_id,
+                        "date_from": date,
+                        "date_to": date
+                    })
+                    reservations_data = reservations_response.get("data", {}).get("reservations", {})
+                    if isinstance(reservations_data, dict):
+                        return len(reservations_data.get("list", []))
+                    return len(reservations_data) if reservations_data else 0
+                except Exception as e:
+                    logger.warning(f"Failed to get program reservations count: {e}")
+                    return 0
+            
+            # ThreadPoolExecutorで並列実行
+            t2 = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_lessons = executor.submit(fetch_studio_lessons)
+                future_shift_slots = executor.submit(fetch_shift_slots)
+                future_instructors = executor.submit(fetch_instructor_studio_map)
+                future_resources = executor.submit(fetch_resources_info)
+                future_reservations = executor.submit(fetch_program_reservations)
                 
-                # 予定ブロックをスタッフと設備に分類
-                resource_shift_slot_reservations = []
-                for slot in shift_slots:
-                    entity_type = slot.get("entity_type", "").upper()
-                    if entity_type == "INSTRUCTOR":
-                        shift_slot_reservations.append({
-                            "entity_id": slot.get("entity_id"),
-                            "entity_type": "INSTRUCTOR",
-                            "start_at": slot.get("start_at"),
-                            "end_at": slot.get("end_at"),
-                            "reservation_type": "SHIFT_SLOT",
-                            "title": slot.get("title", ""),
-                            "description": slot.get("description", "")
-                        })
-                    elif entity_type == "RESOURCE":
-                        resource_shift_slot_reservations.append({
-                            "entity_id": slot.get("entity_id"),
-                            "entity_type": "RESOURCE",
-                            "start_at": slot.get("start_at"),
-                            "end_at": slot.get("end_at"),
-                            "reservation_type": "SHIFT_SLOT",
-                            "title": slot.get("title", ""),
-                            "description": slot.get("description", "")
-                        })
+                # 結果を取得
+                lessons = future_lessons.result()
+                shift_slots = future_shift_slots.result()
+                instructor_studio_map = future_instructors.result()
+                resources_info = future_resources.result()
+                program_reservation_count = future_reservations.result()
+            
+            logger.debug(f"[PERF] parallel API calls: {time.perf_counter() - t2:.3f}s")
+            
+            # 固定枠レッスンを処理
+            for lesson in lessons:
+                fixed_slot_lessons.append({
+                    "id": lesson.get("id"),
+                    "start_at": lesson.get("start_at"),
+                    "end_at": lesson.get("end_at"),
+                    "instructor_id": lesson.get("instructor_id"),
+                    "instructor_ids": lesson.get("instructor_ids", []),
+                    "program_id": lesson.get("program_id"),
+                    "studio_id": lesson.get("studio_id"),
+                    "capacity": lesson.get("capacity", 0)
+                })
                 
-                logger.info(f"Found {len(shift_slots)} shift slots ({len(shift_slot_reservations)} instructor, {len(resource_shift_slot_reservations)} resource) for {date}")
-            except Exception as e:
-                logger.warning(f"Failed to get shift slots: {e}")
+                # 固定枠レッスンの担当スタッフを予約として追加（前後のブロック時間を含む）
+                instructor_ids = lesson.get("instructor_ids", [])
+                if not instructor_ids and lesson.get("instructor_id"):
+                    instructor_ids = [lesson.get("instructor_id")]
+                
+                for instructor_id in instructor_ids:
+                    if instructor_id:
+                        start_at_str = lesson.get("start_at")
+                        end_at_str = lesson.get("end_at")
+                        
+                        if start_at_str and end_at_str:
+                            try:
+                                start_at = datetime.fromisoformat(start_at_str.replace("Z", "+00:00"))
+                                end_at = datetime.fromisoformat(end_at_str.replace("Z", "+00:00"))
+                                
+                                blocked_start = start_at - timedelta(minutes=FIXED_SLOT_BEFORE_INTERVAL_MINUTES)
+                                blocked_end = end_at + timedelta(minutes=FIXED_SLOT_AFTER_INTERVAL_MINUTES)
+                                
+                                fixed_slot_reservations.append({
+                                    "entity_id": instructor_id,
+                                    "entity_type": "INSTRUCTOR",
+                                    "start_at": blocked_start.isoformat(),
+                                    "end_at": blocked_end.isoformat(),
+                                    "original_start_at": start_at_str,
+                                    "original_end_at": end_at_str,
+                                    "studio_lesson_id": lesson.get("id"),
+                                    "reservation_type": "FIXED_SLOT_LESSON",
+                                    "before_interval": FIXED_SLOT_BEFORE_INTERVAL_MINUTES,
+                                    "after_interval": FIXED_SLOT_AFTER_INTERVAL_MINUTES
+                                })
+                            except Exception as e:
+                                logger.warning(f"Failed to parse lesson time: {e}")
+            
+            logger.info(f"Found {len(fixed_slot_lessons)} fixed slot lessons and {len(fixed_slot_reservations)} instructor blocks for {date}")
+            
+            # 予定ブロックをスタッフと設備に分類
+            for slot in shift_slots:
+                entity_type = slot.get("entity_type", "").upper()
+                if entity_type == "INSTRUCTOR":
+                    shift_slot_reservations.append({
+                        "entity_id": slot.get("entity_id"),
+                        "entity_type": "INSTRUCTOR",
+                        "start_at": slot.get("start_at"),
+                        "end_at": slot.get("end_at"),
+                        "reservation_type": "SHIFT_SLOT",
+                        "title": slot.get("title", ""),
+                        "description": slot.get("description", "")
+                    })
+                elif entity_type == "RESOURCE":
+                    resource_shift_slot_reservations.append({
+                        "entity_id": slot.get("entity_id"),
+                        "entity_type": "RESOURCE",
+                        "start_at": slot.get("start_at"),
+                        "end_at": slot.get("end_at"),
+                        "reservation_type": "SHIFT_SLOT",
+                        "title": slot.get("title", ""),
+                        "description": slot.get("description", "")
+                    })
+            
+            logger.info(f"Found {len(shift_slots)} shift slots ({len(shift_slot_reservations)} instructor, {len(resource_shift_slot_reservations)} resource) for {date}")
+            if program_id:
+                logger.info(f"Program {program_id} has {program_reservation_count} reservations on {date}")
         
         # 自由枠の予約情報と固定枠のスタッフブロックと予定ブロックを統合
         all_instructor_reservations = list(schedule.get("reservation_assign_instructor", []))
@@ -2961,30 +3020,7 @@ def get_choice_schedule():
         all_resource_reservations = list(schedule.get("reservation_assign_resource", []))
         all_resource_reservations.extend(resource_shift_slot_reservations)
         
-        # スタッフのスタジオ紐付け情報を取得（キャッシュ付き、リトライあり）
-        instructor_studio_map = get_cached_instructor_studio_map(client)
-        
-        # 設備情報を取得（同時予約可能数を含む）
-        resources_info = get_cached_resources(client, actual_studio_id)
-        
-        # プログラムの1日の予約数を取得
-        program_reservation_count = 0
-        if program_id:
-            try:
-                # その日のそのプログラムの予約を取得
-                reservations_response = client.get_reservations({
-                    "program_id": program_id,
-                    "date_from": date,
-                    "date_to": date
-                })
-                reservations_data = reservations_response.get("data", {}).get("reservations", {})
-                if isinstance(reservations_data, dict):
-                    program_reservation_count = len(reservations_data.get("list", []))
-                else:
-                    program_reservation_count = len(reservations_data) if reservations_data else 0
-                logger.info(f"Program {program_id} has {program_reservation_count} reservations on {date}")
-            except Exception as e:
-                logger.warning(f"Failed to get program reservations count: {e}")
+        logger.info(f"[PERF] Total get_choice_schedule: {time.perf_counter() - start_time:.3f}s")
         
         return jsonify({
             "schedule": {

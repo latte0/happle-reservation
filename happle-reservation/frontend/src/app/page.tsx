@@ -113,6 +113,7 @@ function FreeScheduleContent() {
   }, [])
 
   // 2. Handle Studio Selection -> Load Programs & Find Room
+  // 【パフォーマンス最適化】複数の部屋のスケジュールを並列取得、プログラム取得も並列化
   const handleStudioSelect = async (studio: Studio, isFromUrl: boolean = false) => {
     setSelectedStudio(studio)
     if (!isFromUrl) {
@@ -140,33 +141,49 @@ function FreeScheduleContent() {
         const now = new Date()
         const todayStr = format(now, 'yyyy-MM-dd')
         
+        // 【最適化】プログラム取得と部屋のスケジュール取得を並列実行
+        const [programsData, roomSchedules] = await Promise.all([
+          // プログラム取得（スタッフと設備の両方が紐づいているプログラムのみ）
+          getPrograms({
+            studioId: studio.id,
+            filterFullyConfigured: true
+          }),
+          // 全ての候補部屋のスケジュールを並列取得
+          Promise.all(
+            candidateRooms.map(async (room) => {
+              try {
+                const scheduleData = await getChoiceSchedule(room.id, todayStr)
+                return { room, scheduleData }
+              } catch (err) {
+                console.error(`Failed to check room ${room.id}:`, err)
+                return { room, scheduleData: null }
+              }
+            })
+          )
+        ])
+        
         // 適用期間内の予約カテゴリを探す
         let validRoom: StudioRoom | null = null
         let validRoomService: ChoiceSchedule['studio_room_service'] | null = null
         
-        for (const room of candidateRooms) {
-          try {
-            const scheduleData = await getChoiceSchedule(room.id, todayStr)
-            const roomService = scheduleData?.studio_room_service
-            
-            if (!roomService) continue
-            
-            // 適用期間のチェック（日付のみで比較）
-            // start_date, end_dateがない場合は常に有効とみなす
-            let isWithinPeriod = true
-            if (roomService.start_date && roomService.end_date) {
-              // 日付文字列で比較（yyyy-MM-dd形式）
-              isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
-            }
-            
-            if (isWithinPeriod) {
-              validRoom = room
-              validRoomService = roomService
-              break
-            }
-          } catch (err) {
-            console.error(`Failed to check room ${room.id}:`, err)
-            continue
+        for (const { room, scheduleData } of roomSchedules) {
+          if (!scheduleData) continue
+          const roomService = scheduleData.studio_room_service
+          
+          if (!roomService) continue
+          
+          // 適用期間のチェック（日付のみで比較）
+          // start_date, end_dateがない場合は常に有効とみなす
+          let isWithinPeriod = true
+          if (roomService.start_date && roomService.end_date) {
+            // 日付文字列で比較（yyyy-MM-dd形式）
+            isWithinPeriod = todayStr >= roomService.start_date && todayStr <= roomService.end_date
+          }
+          
+          if (isWithinPeriod) {
+            validRoom = room
+            validRoomService = roomService
+            break
           }
         }
         
@@ -179,23 +196,18 @@ function FreeScheduleContent() {
         setStudioRoomId(validRoom.id)
         setStudioRoomService(validRoomService)
         
-        // Load Programs（スタッフと設備の両方が紐づいているプログラムのみ）
-        let programsData = await getPrograms({
-          studioId: studio.id,
-          filterFullyConfigured: true
-        })
-        
         // 選択可能プログラムでフィルタリング（SELECTED の場合）
+        let filteredPrograms = programsData
         if (validRoomService.selectable_program_type === 'SELECTED' && validRoomService.selectable_program_details) {
           const selectableProgramIds = new Set(validRoomService.selectable_program_details.map(p => p.program_id))
-          programsData = programsData.filter(p => selectableProgramIds.has(p.id))
+          filteredPrograms = programsData.filter(p => selectableProgramIds.has(p.id))
         }
         
-        setPrograms(programsData)
+        setPrograms(filteredPrograms)
         
         // URLパラメータでプログラムが指定されている場合は自動選択
         if (initialProgramId) {
-          const initialProgram = programsData.find(p => p.id === parseInt(initialProgramId))
+          const initialProgram = filteredPrograms.find(p => p.id === parseInt(initialProgramId))
           if (initialProgram) {
             setSelectedProgram(initialProgram)
           }
