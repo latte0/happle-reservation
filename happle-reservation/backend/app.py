@@ -489,7 +489,7 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, st
                         refresh_choice_schedule_range_cache(client, room_id, date_from, date_to, program_id=program_id)
                         range_cached_count += 1
                         logger.debug(f"Refreshed range cache for room {room_id}: {date_from} to {date_to} (program_id={program_id})")
-        except Exception as e:
+                    except Exception as e:
                         logger.warning(f"Failed to refresh cache for room {room_id} program {program_id}: {e}")
             
         except Exception as e:
