@@ -35,6 +35,13 @@ services:
       # キャッシュリフレッシュAPI用シークレットキー
       - key: CACHE_REFRESH_SECRET_KEY
         sync: false
+      # Google Spreadsheet連携
+      - key: GOOGLE_SPREADSHEET_ID
+        value: 1tp2PuI1Qne7sUxZhV_o96yu7OmI14laGo32xlGsBUsc
+      - key: GOOGLE_SHEET_NAME
+        value: 予約履歴
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false  # Render Dashboard で秘密鍵を含むJSON全体を設定
 
   # Frontend (Next.js with Docker)
   - type: web

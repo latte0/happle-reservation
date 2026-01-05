@@ -25,6 +25,16 @@ import requests
 import boto3
 from botocore.exceptions import ClientError
 
+# Google Sheets API
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    # Note: logger might not be available at import time
+
 from hacomono_client import (
     HacomonoClient,
     HacomonoAPIError,
@@ -479,7 +489,7 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, st
                         refresh_choice_schedule_range_cache(client, room_id, date_from, date_to, program_id=program_id)
                         range_cached_count += 1
                         logger.debug(f"Refreshed range cache for room {room_id}: {date_from} to {date_to} (program_id={program_id})")
-                    except Exception as e:
+        except Exception as e:
                         logger.warning(f"Failed to refresh cache for room {room_id} program {program_id}: {e}")
             
         except Exception as e:
@@ -1492,6 +1502,167 @@ def send_slack_notification(
             logger.error(f"Response status: {e.response.status_code}, body: {e.response.text}")
     except Exception as e:
         logger.error(f"Unexpected error sending Slack notification: {e}", exc_info=True)
+
+
+# ==================== Google Sheets連携 ====================
+
+# Google Sheets クライアント（シングルトン）
+_gspread_client = None
+_gspread_worksheet = None
+
+def get_gspread_worksheet():
+    """Google Sheetsのワークシートを取得（シングルトン）"""
+    global _gspread_client, _gspread_worksheet
+    
+    if not GSPREAD_AVAILABLE:
+        logger.warning("gspread is not installed, skipping Google Sheets integration")
+        return None
+    
+    spreadsheet_id = os.environ.get("GOOGLE_SPREADSHEET_ID")
+    if not spreadsheet_id:
+        logger.warning("GOOGLE_SPREADSHEET_ID is not set, skipping Google Sheets integration")
+        return None
+    
+    if _gspread_worksheet is not None:
+        return _gspread_worksheet
+    
+    try:
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        
+        # 環境変数から認証情報を取得（JSON文字列として）
+        credentials_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        
+        if credentials_json:
+            # 環境変数からJSON文字列として読み込み
+            import json as json_module
+            credentials_info = json_module.loads(credentials_json)
+            credentials = Credentials.from_service_account_info(credentials_info, scopes=scopes)
+            logger.info("Using Google credentials from GOOGLE_SERVICE_ACCOUNT_JSON environment variable")
+        else:
+            # ファイルからの読み込み（フォールバック）
+            credentials_path = os.environ.get(
+                "GOOGLE_SERVICE_ACCOUNT_FILE",
+                os.path.join(os.path.dirname(__file__), "asmy-483410-b42feb85af6e.json")
+            )
+            
+            if not os.path.exists(credentials_path):
+                logger.error(f"Google service account file not found: {credentials_path}")
+                return None
+            
+            credentials = Credentials.from_service_account_file(credentials_path, scopes=scopes)
+            logger.info(f"Using Google credentials from file: {credentials_path}")
+        
+        # gspreadクライアントを作成
+        _gspread_client = gspread.authorize(credentials)
+        
+        # スプレッドシートを開く
+        spreadsheet = _gspread_client.open_by_key(spreadsheet_id)
+        
+        # シート名を環境変数から取得（デフォルト: "予約履歴"）
+        sheet_name = os.environ.get("GOOGLE_SHEET_NAME", "予約履歴")
+        
+        try:
+            _gspread_worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            # シートが存在しない場合は作成
+            _gspread_worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=15)
+            # ヘッダー行を追加
+            headers = [
+                "記録日時",
+                "ステータス",
+                "予約ID",
+                "お客様名",
+                "メールアドレス",
+                "電話番号",
+                "店舗名",
+                "予約日",
+                "予約時間",
+                "施術コース",
+                "担当スタッフ",
+                "エラーコード",
+                "エラーメッセージ"
+            ]
+            _gspread_worksheet.append_row(headers)
+            logger.info(f"Created new worksheet '{sheet_name}' with headers")
+        
+        logger.info(f"Google Sheets worksheet initialized: {sheet_name}")
+        return _gspread_worksheet
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize Google Sheets: {e}", exc_info=True)
+        return None
+
+
+def append_reservation_to_spreadsheet(
+    status: str,  # "success" or "error"
+    reservation_id: int = None,
+    guest_name: str = "",
+    guest_email: str = "",
+    guest_phone: str = "",
+    studio_name: str = "",
+    reservation_date: str = "",
+    reservation_time: str = "",
+    program_name: str = "",
+    instructor_names: str = "",
+    error_message: str = "",
+    error_code: str = ""
+):
+    """予約情報をGoogle Spreadsheetに追記
+    
+    Slackに送信しているのと同じ情報をスプレッドシートの最終行に追加します。
+    
+    Args:
+        status: "success" または "error"
+        reservation_id: 予約ID
+        guest_name: ゲスト名
+        guest_email: メールアドレス
+        guest_phone: 電話番号
+        studio_name: 店舗名
+        reservation_date: 予約日
+        reservation_time: 予約時間
+        program_name: 施術コース名
+        instructor_names: 担当スタッフ名（カンマ区切り）
+        error_message: エラーメッセージ（エラー時）
+        error_code: エラーコード（エラー時）
+    """
+    try:
+        worksheet = get_gspread_worksheet()
+        if worksheet is None:
+            return
+        
+        # 記録日時
+        recorded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # ステータス
+        status_text = "予約成功" if status == "success" else "予約失敗"
+        
+        # 行データを作成
+        row_data = [
+            recorded_at,
+            status_text,
+            str(reservation_id) if reservation_id else "",
+            guest_name or "",
+            guest_email or "",
+            guest_phone or "",
+            studio_name or "",
+            reservation_date or "",
+            reservation_time or "",
+            program_name or "",
+            instructor_names or "",
+            error_code or "",
+            error_message or ""
+        ]
+        
+        # 最終行に追記
+        worksheet.append_row(row_data, value_input_option='USER_ENTERED')
+        
+        logger.info(f"Reservation data appended to Google Sheets: reservation_id={reservation_id}, status={status}")
+        
+    except Exception as e:
+        logger.error(f"Failed to append reservation to Google Sheets: {e}", exc_info=True)
 
 
 def send_email_log_to_slack(
@@ -3001,6 +3172,19 @@ def create_reservation():
         program_name=program_name
     )
     
+    # Google Spreadsheetに記録
+    append_reservation_to_spreadsheet(
+        status="success",
+        reservation_id=reservation_id,
+        guest_name=data.get("guest_name", ""),
+        guest_email=data.get("guest_email", ""),
+        guest_phone=data.get("guest_phone", ""),
+        studio_name=studio_name,
+        reservation_date=reservation_date,
+        reservation_time=reservation_time,
+        program_name=program_name
+    )
+    
     # 店舗スタッフ向けメール通知
     try:
         send_staff_notification_email(
@@ -3805,6 +3989,19 @@ def create_choice_reservation():
     
     # Slack通知（成功）
     send_slack_notification(
+        status="success",
+        reservation_id=reservation_id,
+        guest_name=guest_name,
+        guest_email=guest_email,
+        guest_phone=guest_phone,
+        studio_name=studio_name,
+        reservation_date=reservation_date,
+        reservation_time=reservation_time,
+        program_name=program_name
+    )
+    
+    # Google Spreadsheetに記録
+    append_reservation_to_spreadsheet(
         status="success",
         reservation_id=reservation_id,
         guest_name=guest_name,
