@@ -1663,6 +1663,67 @@ def append_reservation_to_spreadsheet(
         
     except Exception as e:
         logger.error(f"Failed to append reservation to Google Sheets: {e}", exc_info=True)
+        # Slackにエラー通知（予約処理には影響しない）
+        try:
+            send_spreadsheet_error_to_slack(
+                reservation_id=reservation_id,
+                guest_name=guest_name,
+                error_message=str(e)
+            )
+        except Exception as slack_err:
+            logger.error(f"Failed to send spreadsheet error to Slack: {slack_err}")
+
+
+def send_spreadsheet_error_to_slack(
+    reservation_id: int = None,
+    guest_name: str = "",
+    error_message: str = ""
+):
+    """スプレッドシート書き込みエラーをSlackに通知
+    
+    予約処理自体には影響を与えずに、エラーを通知するための関数
+    """
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    
+    if not webhook_url:
+        return
+    
+    try:
+        payload = {
+            "text": "⚠️ スプレッドシート書き込みエラー",
+            "attachments": [
+                {
+                    "color": "#ffcc00",  # 黄色（警告）
+                    "title": "📊 Google Spreadsheet エラー",
+                    "fields": [
+                        {
+                            "title": "予約ID",
+                            "value": str(reservation_id) if reservation_id else "N/A",
+                            "short": True
+                        },
+                        {
+                            "title": "お客様名",
+                            "value": guest_name or "N/A",
+                            "short": True
+                        },
+                        {
+                            "title": "エラー内容",
+                            "value": error_message[:500] if error_message else "不明なエラー",
+                            "short": False
+                        }
+                    ],
+                    "footer": "予約は正常に完了しています",
+                    "ts": int(datetime.now().timestamp())
+                }
+            ]
+        }
+        
+        response = requests.post(webhook_url, json=payload, timeout=5)
+        response.raise_for_status()
+        logger.info(f"Spreadsheet error notification sent to Slack for reservation {reservation_id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to send spreadsheet error notification to Slack: {e}")
 
 
 def send_email_log_to_slack(
