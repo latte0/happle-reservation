@@ -5,6 +5,9 @@ import Script from 'next/script'
 export const metadata: Metadata = {
   title: '予約ナビ',
   description: 'かんたん・スムーズなオンライン予約システム',
+  icons: {
+    icon: '/favicon.ico',
+  },
 }
 
 export default function RootLayout({
