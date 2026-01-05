@@ -3,8 +3,8 @@ import './globals.css'
 import Script from 'next/script'
 
 export const metadata: Metadata = {
-  title: 'Happle Reservation',
-  description: '予約システム',
+  title: '予約ナビ',
+  description: 'かんたん・スムーズなオンライン予約システム',
 }
 
 export default function RootLayout({
@@ -45,6 +45,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     </html>
   )
 }
+
 
 
 
