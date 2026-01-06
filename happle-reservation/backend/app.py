@@ -1829,7 +1829,40 @@ def send_email_log_to_slack(
         logger.error(f"Unexpected error sending email log to Slack: {e}")
 
 
+def get_studio_notification_email(client: HacomonoClient, studio_id: int) -> str | None:
+    """店舗のカスタム属性からメールアドレスを取得
+    
+    hacomonoの店舗データのattrs内のkey="email"のvalueを返す
+    取得できない場合はNoneを返す
+    
+    Args:
+        client: hacomonoクライアント
+        studio_id: 店舗ID
+        
+    Returns:
+        str | None: メールアドレス（取得できない場合はNone）
+    """
+    try:
+        studio_response = client.get_studio(studio_id)
+        studio_data = studio_response.get("data", {}).get("studio", {})
+        attrs = studio_data.get("attrs", [])
+        
+        for attr in attrs:
+            if attr.get("key") == "email" and attr.get("value"):
+                email = attr.get("value")
+                logger.info(f"Found notification email for studio {studio_id}: {email}")
+                return email
+        
+        logger.info(f"No notification email found in attrs for studio {studio_id}")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get notification email for studio {studio_id}: {e}")
+        return None
+
+
 def send_staff_notification_email(
+    client: HacomonoClient,
+    studio_id: int,
     reservation_id: int,
     guest_name: str,
     guest_email: str,
@@ -1845,10 +1878,13 @@ def send_staff_notification_email(
 ) -> dict:
     """店舗スタッフ向けの予約通知メールを送信
     
-    環境変数 STAFF_NOTIFICATION_EMAIL に設定されたアドレスにメール送信
+    店舗のカスタム属性（attrs）の key="email" に設定されたアドレスにメール送信
     Slack通知と同じタイミングで呼び出される
+    メールアドレスが取得できない場合は送信しない
     
     Args:
+        client: hacomonoクライアント
+        studio_id: 店舗ID
         reservation_id: 予約ID
         guest_name: お客様名
         guest_email: お客様メールアドレス
@@ -1865,11 +1901,12 @@ def send_staff_notification_email(
     Returns:
         dict: {"success": bool, "message_id": str or None, "error": str or None}
     """
-    staff_email = os.environ.get("STAFF_NOTIFICATION_EMAIL")
+    # 店舗のカスタム属性からメールアドレスを取得
+    staff_email = get_studio_notification_email(client, studio_id)
     
     if not staff_email:
-        logger.info("STAFF_NOTIFICATION_EMAIL is not set, skipping staff notification email")
-        return {"success": True, "message_id": None, "error": "Not configured (skipped)"}
+        logger.info(f"No notification email for studio {studio_id}, skipping staff notification email")
+        return {"success": True, "message_id": None, "error": "No email configured (skipped)"}
     
     # 件名
     subject = f"【予約通知】{guest_name}様 - {reservation_date} {reservation_time}"
@@ -1926,6 +1963,92 @@ def send_staff_notification_email(
         
     except Exception as e:
         logger.error(f"Error sending staff notification email: {e}")
+        return {"success": False, "message_id": None, "error": str(e)}
+
+
+def send_cancel_notification_email(
+    client: HacomonoClient,
+    studio_id: int,
+    reservation_id: int,
+    guest_name: str,
+    guest_email: str,
+    guest_phone: str,
+    studio_name: str,
+    program_name: str,
+    reservation_date: str,
+    reservation_time: str
+) -> dict:
+    """店舗スタッフ向けのキャンセル通知メールを送信
+    
+    店舗のカスタム属性（attrs）の key="email" に設定されたアドレスにメール送信
+    メールアドレスが取得できない場合は送信しない
+    
+    Args:
+        client: hacomonoクライアント
+        studio_id: 店舗ID
+        reservation_id: 予約ID
+        guest_name: お客様名
+        guest_email: お客様メールアドレス
+        guest_phone: お客様電話番号
+        studio_name: 店舗名
+        program_name: メニュー名
+        reservation_date: 予約日
+        reservation_time: 予約時間
+    
+    Returns:
+        dict: {"success": bool, "message_id": str or None, "error": str or None}
+    """
+    # 店舗のカスタム属性からメールアドレスを取得
+    staff_email = get_studio_notification_email(client, studio_id)
+    
+    if not staff_email:
+        logger.info(f"No notification email for studio {studio_id}, skipping cancel notification email")
+        return {"success": True, "message_id": None, "error": "No email configured (skipped)"}
+    
+    # 件名
+    subject = f"【キャンセル通知】{guest_name}様 - {reservation_date} {reservation_time}"
+    
+    # 本文
+    body_text = f"""【予約がキャンセルされました】
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+　キャンセル情報
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+■ 予約ID: {reservation_id}
+■ 店舗: {studio_name}
+
+■ お客様情報
+　・お名前: {guest_name}様
+　・メール: {guest_email}
+　・電話番号: {guest_phone}
+
+■ キャンセルされた予約
+　・予約日: {reservation_date}
+　・予約時間: {reservation_time}
+　・メニュー: {program_name}
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+
+このメールは予約システムから自動送信されています。
+"""
+    
+    try:
+        result = send_email_via_ses(
+            to_email=staff_email,
+            subject=subject,
+            body_text=body_text
+        )
+        
+        if result.get("success"):
+            logger.info(f"Cancel notification email sent to {staff_email} for reservation {reservation_id}")
+        else:
+            logger.error(f"Failed to send cancel notification email: {result.get('error')}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error sending cancel notification email: {e}")
         return {"success": False, "message_id": None, "error": str(e)}
 
 
@@ -3246,9 +3369,11 @@ def create_reservation():
         program_name=program_name
     )
     
-    # 店舗スタッフ向けメール通知
+    # 店舗スタッフ向けメール通知（店舗のカスタム属性からメールアドレスを取得）
     try:
         send_staff_notification_email(
+            client=client,
+            studio_id=studio_id,
             reservation_id=reservation_id,
             guest_name=data.get("guest_name", ""),
             guest_email=data.get("guest_email", ""),
@@ -4074,9 +4199,11 @@ def create_choice_reservation():
         program_name=program_name
     )
     
-    # 店舗スタッフ向けメール通知
+    # 店舗スタッフ向けメール通知（店舗のカスタム属性からメールアドレスを取得）
     try:
         send_staff_notification_email(
+            client=client,
+            studio_id=studio_id,
             reservation_id=reservation_id,
             guest_name=guest_name,
             guest_email=guest_email,
@@ -4138,11 +4265,17 @@ def cancel_reservation(reservation_id: int):
         }), 400
     
     # メンバー情報を取得してハッシュを検証
+    guest_name = ""
+    guest_email = ""
+    guest_phone = ""
     try:
         member_response = client.get_member(member_id)
         member_data = member_response.get("data", {}).get("member", {})
         member_email = member_data.get("mail_address", "")
         member_phone = member_data.get("tel", "")
+        guest_name = f"{member_data.get('last_name', '')} {member_data.get('first_name', '')}".strip()
+        guest_email = member_email
+        guest_phone = member_phone
         
         if not verify_hash(member_email, member_phone, provided_verify):
             logger.warning(f"Hash verification failed for reservation {reservation_id}, member {member_id}")
@@ -4159,7 +4292,72 @@ def cancel_reservation(reservation_id: int):
             "message": "認証処理中にエラーが発生しました"
         }), 500
     
+    # キャンセル前に予約情報を取得（通知用）
+    studio_id = None
+    studio_name = ""
+    program_name = ""
+    reservation_date = ""
+    reservation_time = ""
+    try:
+        res_response = client.get_reservation(reservation_id)
+        reservation_data = res_response.get("data", {}).get("reservation", {})
+        
+        # 日時の取得
+        start_at = reservation_data.get("start_at", "")
+        if start_at:
+            try:
+                start_dt = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
+                reservation_date = start_dt.strftime("%Y-%m-%d(%a)")
+                reservation_time = start_dt.strftime("%H:%M")
+            except:
+                pass
+        
+        # レッスン情報から店舗・プログラム情報を取得
+        studio_lesson_id = reservation_data.get("studio_lesson_id")
+        if studio_lesson_id:
+            try:
+                lesson_response = client.get_studio_lesson(studio_lesson_id)
+                lesson_data = lesson_response.get("data", {}).get("studio_lesson", {})
+                
+                # 店舗情報
+                lesson_studio_id = lesson_data.get("studio_id")
+                if lesson_studio_id:
+                    studio_id = lesson_studio_id
+                    studio_response = client.get_studio(studio_id)
+                    studio_data = studio_response.get("data", {}).get("studio", {})
+                    studio_name = studio_data.get("name", "")
+                
+                # プログラム情報
+                program_id = lesson_data.get("program_id")
+                if program_id:
+                    program_response = client.get_program(program_id)
+                    program_data = program_response.get("data", {}).get("program", {})
+                    program_name = program_data.get("name", "")
+            except Exception as e:
+                logger.warning(f"Failed to get lesson info for cancel notification: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to get reservation info for cancel notification: {e}")
+    
+    # キャンセルを実行
     response = client.cancel_reservation(member_id, [reservation_id])
+    
+    # キャンセル通知メールを送信（店舗のカスタム属性からメールアドレスを取得）
+    if studio_id:
+        try:
+            send_cancel_notification_email(
+                client=client,
+                studio_id=studio_id,
+                reservation_id=reservation_id,
+                guest_name=guest_name,
+                guest_email=guest_email,
+                guest_phone=guest_phone,
+                studio_name=studio_name,
+                program_name=program_name,
+                reservation_date=reservation_date,
+                reservation_time=reservation_time
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send cancel notification email: {e}")
     
     return jsonify({
         "success": True,

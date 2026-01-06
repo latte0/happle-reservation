@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>menu-selection-logic.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="%E5%BA%83%E5%91%8A%E3%83%AA%E3%83%B3%E3%82%AF%E7%94%9F%E6%88%90%E3%83%84%E3%83%BC%E3%83%AB%E3%83%A1%E3%83%8B%E3%83%A5%E3%83%BC%E9%81%B8%E6%8A%9E%E3%83%AD%E3%82%B8%E3%83%83%E3%82%AF">広告リンク生成ツール「メニュー選択」ロジック</h1>
+<h2 id="%E6%A6%82%E8%A6%81">概要</h2>
+<p>広告リンク生成ツール（<code>/admin/link-generator</code>）の「メニューを選択」ドロップダウンに表示されるメニュー（プログラム）は、<strong>hacomonoの管理画面で設定した内容</strong>に基づいてフィルタリングされます。</p>
+<hr>
+<h2 id="%E7%94%A8%E8%AA%9E%E8%AA%AC%E6%98%8E">用語説明</h2>
+<h3 id="%E4%BA%88%E7%B4%84%E3%82%AB%E3%83%86%E3%82%B4%E3%83%AA%E3%81%A8%E3%81%AF">予約カテゴリとは</h3>
+<p>hacomonoの管理画面で <strong>「マスタ → 予約カテゴリ」</strong> にある設定のことです。</p>
+<p><strong>1店舗に複数の予約カテゴリを作ることができます。</strong> 例えば：</p>
+<table>
+<thead>
+<tr>
+<th>予約カテゴリ名</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>「パーソナルトレーニング予約」</td>
+<td>マンツーマン施術用</td>
+</tr>
+<tr>
+<td>「グループレッスン」</td>
+<td>固定時間のクラス用</td>
+</tr>
+<tr>
+<td>「体験予約」</td>
+<td>初回体験者用</td>
+</tr>
+</tbody>
+</table>
+<h3 id="%E4%BA%88%E7%B4%84%E3%82%BF%E3%82%A4%E3%83%97choice-%E3%81%A8-fixed">予約タイプ（CHOICE と FIXED）</h3>
+<p>各予約カテゴリには「予約タイプ」を設定します。2種類あります：</p>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart LR
+    subgraph type[予約タイプ]
+        A[CHOICE<br/>自由枠予約] 
+        B[FIXED<br/>固定枠予約]
+    end
+    
+    A --> C[お客様が好きな時間を選べる<br/>例: 10:00〜、10:30〜、11:00〜...]
+    B --> D[決まった時間のレッスン<br/>例: 毎週月曜 19:00〜のヨガクラス]
+
+    style A fill:#cce5ff
+    style B fill:#e2e3e5
+    style C fill:#d4edda
+    style D fill:#f0f0f0
+</div></code></pre>
+<table>
+<thead>
+<tr>
+<th>予約タイプ</th>
+<th>日本語名</th>
+<th>説明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CHOICE</strong></td>
+<td>自由枠予約</td>
+<td>お客様が空いている時間から自由に選んで予約できる</td>
+</tr>
+<tr>
+<td><strong>FIXED</strong></td>
+<td>固定枠予約</td>
+<td>あらかじめ決まったレッスン枠に予約する</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>重要</strong>: この広告リンク生成ツールは <strong>「自由枠予約（CHOICE）」専用</strong> です。固定枠予約（FIXED）の予約カテゴリは対象外となります。</p>
+</blockquote>
+<h3 id="%E9%81%A9%E7%94%A8%E6%9C%9F%E9%96%93%E3%81%A8%E3%81%AF">適用期間とは</h3>
+<p>予約カテゴリに設定する <strong>「いつからいつまで予約を受け付けるか」</strong> の期間設定です。</p>
+<pre><code class="language-mermaid"><div class="mermaid">gantt
+    title 適用期間の例
+    dateFormat  YYYY-MM-DD
+    section 予約カテゴリA
+    適用期間（通常予約）      :active, a1, 2024-01-01, 2024-12-31
+    section 予約カテゴリB
+    適用期間（春キャンペーン） :active, b1, 2024-04-01, 2024-04-30
+    section 判定
+    今日（6/15）             :milestone, m1, 2024-06-15, 0d
+</div></code></pre>
+<table>
+<thead>
+<tr>
+<th>設定項目</th>
+<th>説明</th>
+<th>例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>開始日（start_date）</strong></td>
+<td>この日から予約を受け付け開始</td>
+<td>2024-01-01</td>
+</tr>
+<tr>
+<td><strong>終了日（end_date）</strong></td>
+<td>この日まで予約を受け付け</td>
+<td>2024-12-31</td>
+</tr>
+</tbody>
+</table>
+<h4 id="%E5%88%A4%E5%AE%9A%E4%BE%8B">判定例</h4>
+<table>
+<thead>
+<tr>
+<th>適用期間の設定</th>
+<th>今日の日付</th>
+<th>結果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2024-01-01 〜 2024-12-31</td>
+<td>2024-06-15</td>
+<td>✅ 期間内 → メニュー表示される</td>
+</tr>
+<tr>
+<td>2024-01-01 〜 2024-03-31</td>
+<td>2024-06-15</td>
+<td>❌ 期間終了 → エラー表示</td>
+</tr>
+<tr>
+<td>2025-01-01 〜 2025-12-31</td>
+<td>2024-06-15</td>
+<td>❌ まだ開始前 → エラー表示</td>
+</tr>
+</tbody>
+</table>
+<h4 id="%E3%81%AA%E3%81%9C%E9%81%A9%E7%94%A8%E6%9C%9F%E9%96%93%E3%81%8C%E5%BF%85%E8%A6%81">なぜ適用期間が必要？</h4>
+<ul>
+<li><strong>キャンペーン期間限定の予約</strong> を設定できる</li>
+<li><strong>シーズンごとの予約切り替え</strong> ができる</li>
+<li><strong>将来の予約受付開始日</strong> を事前に設定できる</li>
+</ul>
+<h3 id="%E7%A2%BA%E8%AA%8D%E5%A0%B4%E6%89%80">確認場所</h3>
+<p><strong>hacomono管理画面: マスタ → 予約カテゴリ → [カテゴリを選択]</strong></p>
+<p>設定画面で「予約タイプ」が「自由枠予約」になっているかを確認してください。</p>
+<hr>
+<h2 id="%E3%83%A1%E3%83%8B%E3%83%A5%E3%83%BC%E8%A1%A8%E7%A4%BA%E3%81%AE%E3%83%95%E3%83%AD%E3%83%BC%E3%83%81%E3%83%A3%E3%83%BC%E3%83%88">メニュー表示のフローチャート</h2>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart TD
+    A[広告リンク生成ツールを開く] --> B[プログラム一覧を取得]
+    B --> C{スタッフ & 設備が<br/>紐づいている？}
+    
+    C -->|No| D[❌ 表示されない]
+    C -->|Yes| E[✅ 候補として保持]
+    
+    E --> F{店舗を選択？}
+    
+    F -->|未選択| G[全プログラムを表示]
+    F -->|選択| H[予約カテゴリを確認]
+    
+    H --> I{自由枠予約の<br/>予約カテゴリがある？}
+    
+    I -->|No| J[⚠️ エラー<br/>予約可能なカテゴリがありません]
+    I -->|Yes| K{今日が適用期間内？<br/>開始日〜終了日}
+    
+    K -->|No| L[⚠️ エラー<br/>予約を受け付けていない期間です]
+    K -->|Yes| M{選択可能プログラム<br/>の設定は？}
+    
+    M -->|ALL| N[全プログラムを表示]
+    M -->|SELECTED| O[指定プログラムのみ表示]
+    
+    O --> P{該当プログラム<br/>がある？}
+    P -->|No| Q[⚠️ メッセージ<br/>選択可能なメニューがありません]
+    P -->|Yes| R[フィルタされた<br/>プログラムを表示]
+
+    style D fill:#ffcccc
+    style J fill:#fff3cd
+    style L fill:#fff3cd
+    style Q fill:#fff3cd
+    style G fill:#d4edda
+    style N fill:#d4edda
+    style R fill:#d4edda
+</div></code></pre>
+<hr>
+<h2 id="%E3%83%97%E3%83%AD%E3%82%B0%E3%83%A9%E3%83%A0%E3%81%AE%E8%A1%A8%E7%A4%BA%E6%9D%A1%E4%BB%B6">プログラムの表示条件</h2>
+<h3 id="%E6%9D%A1%E4%BB%B61-%E3%82%B9%E3%82%BF%E3%83%83%E3%83%95%E3%81%A8%E8%A8%AD%E5%82%99%E3%81%AE%E7%B4%90%E3%81%A5%E3%81%91%E5%BF%85%E9%A0%88">条件1: スタッフと設備の紐づけ（必須）</h3>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart LR
+    subgraph program[プログラム設定]
+        A[選択可能スタッフ] --> B{設定タイプ}
+        B -->|ALL / RANDOM_ALL| C[✅ OK]
+        B -->|SELECTED / FIXED| D{スタッフが<br/>1人以上？}
+        D -->|Yes| C
+        D -->|No| E[❌ NG]
+        
+        F[選択可能設備] --> G{設定タイプ}
+        G -->|ALL / RANDOM_ALL| H[❌ NG<br/>明示的な紐づけが必要]
+        G -->|SELECTED / FIXED| I{設備が<br/>1つ以上？}
+        I -->|Yes| J[✅ OK]
+        I -->|No| H
+    end
+    
+    C --> K{両方OK？}
+    J --> K
+    K -->|Yes| L[✅ 表示対象]
+    K -->|No| M[❌ 非表示]
+
+    style C fill:#d4edda
+    style J fill:#d4edda
+    style L fill:#d4edda
+    style E fill:#ffcccc
+    style H fill:#ffcccc
+    style M fill:#ffcccc
+</div></code></pre>
+<h3 id="%E6%9D%A1%E4%BB%B62-%E4%BA%88%E7%B4%84%E3%82%AB%E3%83%86%E3%82%B4%E3%83%AA%E3%81%AE%E8%A8%AD%E5%AE%9A%E5%BA%97%E8%88%97%E9%81%B8%E6%8A%9E%E6%99%82">条件2: 予約カテゴリの設定（店舗選択時）</h3>
+<p>店舗を選択すると、その店舗の <strong>予約カテゴリ</strong> の設定をチェックします。</p>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart TD
+    subgraph studio_room[予約カテゴリ設定]
+        A[予約タイプを確認] -->|CHOICE<br/>自由枠予約| B[✅ 対象]
+        A -->|FIXED<br/>固定枠予約| C[❌ 対象外<br/>このツールでは使用不可]
+        
+        B --> D[適用期間チェック]
+        D --> E{今日の日付が<br/>開始日〜終了日<br/>の範囲内？}
+        
+        E -->|Yes| F[選択可能プログラム設定]
+        E -->|No| G[❌ 期間外エラー]
+        
+        F --> H{selectable_program_type}
+        H -->|ALL| I[全プログラム表示]
+        H -->|SELECTED| J[selectable_program_details<br/>のプログラムのみ]
+    end
+
+    style B fill:#d4edda
+    style C fill:#ffcccc
+    style G fill:#ffcccc
+    style I fill:#d4edda
+    style J fill:#d4edda
+</div></code></pre>
+<hr>
+<h2 id="hacomono%E7%AE%A1%E7%90%86%E7%94%BB%E9%9D%A2%E3%81%A7%E3%81%AE%E8%A8%AD%E5%AE%9A%E5%A0%B4%E6%89%80">hacomono管理画面での設定場所</h2>
+<h3 id="1-%E3%83%97%E3%83%AD%E3%82%B0%E3%83%A9%E3%83%A0%E3%81%AE%E8%A8%AD%E5%AE%9A">1. プログラムの設定</h3>
+<p><strong>マスタ → プログラム → [プログラム名] → 編集</strong></p>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart LR
+    subgraph hacomono[hacomono管理画面]
+        A[マスタ] --> B[プログラム]
+        B --> C[プログラム編集]
+        C --> D[選択可能スタッフ詳細]
+        C --> E[選択可能設備詳細]
+    end
+    
+    D --> F[スタッフを紐づける]
+    E --> G[設備を明示的に紐づける<br/>SELECTED または FIXED]
+
+    style F fill:#d4edda
+    style G fill:#d4edda
+</div></code></pre>
+<table>
+<thead>
+<tr>
+<th>設定項目</th>
+<th>必要な条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>選択可能スタッフ</strong></td>
+<td>スタッフが1人以上紐づいている（「全スタッフ」設定でもOK）</td>
+</tr>
+<tr>
+<td><strong>選択可能設備</strong></td>
+<td>設備が<strong>明示的に</strong>紐づいている（「全設備から選択」はNG）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="2-%E4%BA%88%E7%B4%84%E3%82%AB%E3%83%86%E3%82%B4%E3%83%AA%E3%81%AE%E8%A8%AD%E5%AE%9A">2. 予約カテゴリの設定</h3>
+<p><strong>マスタ → 予約カテゴリ → [カテゴリ名] → 編集</strong></p>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart LR
+    subgraph hacomono[hacomono管理画面]
+        A[マスタ] --> B[予約カテゴリ]
+        B --> C[カテゴリ編集]
+        C --> D[予約タイプ]
+        C --> E[適用期間]
+        C --> F[選択可能プログラム]
+    end
+    
+    D --> G[CHOICE: 自由枠予約]
+    E --> H[開始日 〜 終了日]
+    F --> I[ALL: 全プログラム<br/>SELECTED: 特定プログラム]
+
+    style G fill:#cce5ff
+    style H fill:#fff3cd
+    style I fill:#d4edda
+</div></code></pre>
+<table>
+<thead>
+<tr>
+<th>設定項目</th>
+<th>説明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>予約タイプ</strong></td>
+<td>「自由枠予約（CHOICE）」を選択</td>
+</tr>
+<tr>
+<td><strong>適用期間</strong></td>
+<td>いつからいつまで予約を受け付けるか（開始日・終了日）</td>
+</tr>
+<tr>
+<td><strong>選択可能プログラム</strong></td>
+<td>「ALL」＝全プログラム / 「SELECTED」＝特定のプログラムのみ</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="%E3%82%A8%E3%83%A9%E3%83%BC%E3%83%A1%E3%83%83%E3%82%BB%E3%83%BC%E3%82%B8%E3%81%A8%E5%AF%BE%E5%87%A6%E6%B3%95">エラーメッセージと対処法</h2>
+<pre><code class="language-mermaid"><div class="mermaid">flowchart TD
+    subgraph errors[エラーと対処法]
+        A[この店舗には予約可能な<br/>カテゴリがありません] --> A1[予約カテゴリを作成し<br/>予約タイプを「自由枠予約」に設定]
+        
+        B[この店舗は現在予約を<br/>受け付けていない期間です] --> B1[適用期間<br/>開始日・終了日を確認・更新]
+        
+        C[この店舗で選択可能な<br/>メニューがありません] --> C1[選択可能プログラムの設定を確認<br/>または対象プログラムの有効化]
+        
+        D[メニューが一切表示されない] --> D1[プログラムの<br/>選択可能スタッフ・設備を設定]
+    end
+
+    style A fill:#ffcccc
+    style B fill:#ffcccc
+    style C fill:#ffcccc
+    style D fill:#ffcccc
+    style A1 fill:#d4edda
+    style B1 fill:#d4edda
+    style C1 fill:#d4edda
+    style D1 fill:#d4edda
+</div></code></pre>
+<table>
+<thead>
+<tr>
+<th>エラーメッセージ</th>
+<th>原因</th>
+<th>対処法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>「この店舗には予約可能なカテゴリがありません」</td>
+<td>自由枠予約（CHOICE）の予約カテゴリがない</td>
+<td>予約カテゴリを作成し、予約タイプを「自由枠予約」に設定</td>
+</tr>
+<tr>
+<td>「この店舗は現在予約を受け付けていない期間です」</td>
+<td>予約カテゴリの適用期間外</td>
+<td>適用期間（開始日・終了日）を確認・更新</td>
+</tr>
+<tr>
+<td>「この店舗で選択可能なメニューがありません」</td>
+<td>予約カテゴリで選択可能プログラムが設定されていない</td>
+<td>選択可能プログラムの設定を確認</td>
+</tr>
+<tr>
+<td>メニューが一切表示されない</td>
+<td>プログラムにスタッフまたは設備が紐づいていない</td>
+<td>プログラムの「選択可能スタッフ」「選択可能設備」を設定</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="%E9%96%A2%E9%80%A3api%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88">関連APIドキュメント</h2>
+<ul>
+<li><a href="https://hacomono.github.io/hacomono-documents/api-admin/index.html">hacomono API ドキュメント</a>
+<ul>
+<li>プログラム検索・取得</li>
+<li>予約カテゴリ検索・取得</li>
+<li>自由予約受付設定</li>
+</ul>
+</li>
+</ul>
+<hr>
+<h2 id="%E6%8A%80%E8%A1%93%E7%9A%84%E3%81%AA%E8%A3%9C%E8%B6%B3">技術的な補足</h2>
+<h3 id="%E3%83%87%E3%83%BC%E3%82%BF%E5%8F%96%E5%BE%97%E3%81%AE%E6%B5%81%E3%82%8C">データ取得の流れ</h3>
+<pre><code class="language-mermaid"><div class="mermaid">sequenceDiagram
+    participant UI as 広告リンク生成ツール
+    participant API as バックエンドAPI
+    participant HC as hacomono API
+
+    UI->>API: getPrograms({ filterFullyConfigured: true })
+    API->>HC: GET /programs
+    HC-->>API: プログラム一覧
+    API-->>UI: フィルタ済みプログラム
+
+    Note over UI: 店舗を選択
+
+    UI->>API: getStudioRooms(studioId)
+    API->>HC: GET /studio-rooms
+    HC-->>API: 予約カテゴリ一覧
+    API-->>UI: 自由枠予約タイプの予約カテゴリ
+
+    UI->>API: getChoiceScheduleRange(roomId, dateFrom, dateTo)
+    API->>HC: GET /choice-schedule
+    HC-->>API: スケジュール情報（studio_room_service含む）
+    API-->>UI: 適用期間・選択可能プログラム情報
+
+    Note over UI: selectable_program_type に基づいてフィルタリング
+</div></code></pre>
+<h3 id="%E4%B8%BB%E8%A6%81%E3%81%AA%E3%83%87%E3%83%BC%E3%82%BF%E6%A7%8B%E9%80%A0">主要なデータ構造</h3>
+<pre><code class="language-mermaid"><div class="mermaid">erDiagram
+    PROGRAM ||--o{ SELECTABLE_INSTRUCTOR : has
+    PROGRAM ||--o{ SELECTABLE_RESOURCE : has
+    STUDIO ||--o{ STUDIO_ROOM : has
+    STUDIO_ROOM ||--|| STUDIO_ROOM_SERVICE : has
+    STUDIO_ROOM_SERVICE ||--o{ SELECTABLE_PROGRAM : has
+
+    PROGRAM {
+        int id
+        string name
+        string code
+        int price
+    }
+    
+    SELECTABLE_INSTRUCTOR {
+        string type "ALL, SELECTED, FIXED, etc."
+        array items "instructor_id[]"
+    }
+    
+    SELECTABLE_RESOURCE {
+        string type "ALL, SELECTED, FIXED, etc."
+        array items "resource_id[]"
+    }
+    
+    STUDIO_ROOM {
+        int id
+        string name
+        string reservation_type "CHOICE=自由枠 / FIXED=固定枠"
+    }
+    
+    STUDIO_ROOM_SERVICE {
+        int id
+        string start_date
+        string end_date
+        string selectable_program_type "ALL or SELECTED"
+    }
+    
+    SELECTABLE_PROGRAM {
+        int program_id
+        string program_name
+    }
+</div></code></pre>
+
+</body>
+</html>
