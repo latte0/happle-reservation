@@ -72,10 +72,3 @@ fi
 echo ""
 echo -e "${GREEN}完了！${NC}"
 
-
-
-
-
-
-
-

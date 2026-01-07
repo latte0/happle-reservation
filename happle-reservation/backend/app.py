@@ -25,16 +25,6 @@ import requests
 import boto3
 from botocore.exceptions import ClientError
 
-# Google Sheets API
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-    GSPREAD_AVAILABLE = True
-except ImportError:
-    GSPREAD_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    # Note: logger might not be available at import time
-
 from hacomono_client import (
     HacomonoClient,
     HacomonoAPIError,
@@ -396,7 +386,7 @@ def refresh_choice_schedule_range_cache(client: HacomonoClient, studio_room_id: 
     return response_data
 
 
-def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, studio_ids: list = None, start_offset_days: int = 0) -> dict:
+def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, studio_ids: list = None) -> dict:
     """指定したstudio_roomの完全なスケジュールをキャッシュにロード
     
     choice-schedule-range形式で完全なデータをキャッシュ（フロントエンドと同じ形式）
@@ -405,7 +395,6 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, st
         client: hacomono APIクライアント
         days: キャッシュする日数（デフォルト14日）
         studio_ids: 対象の店舗IDリスト（Noneの場合は全店舗）
-        start_offset_days: 開始日のオフセット（0=今日から、7=来週から）
     
     Returns:
         dict: リフレッシュ結果の統計情報
@@ -436,66 +425,26 @@ def refresh_all_choice_schedule_cache(client: HacomonoClient, days: int = 14, st
         }
     
     today = datetime.now()
-    start_date = today + timedelta(days=start_offset_days)
-    date_from = start_date.strftime("%Y-%m-%d")
-    date_to = (start_date + timedelta(days=days-1)).strftime("%Y-%m-%d")
-    dates = [(start_date + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    date_from = today.strftime("%Y-%m-%d")
+    date_to = (today + timedelta(days=days-1)).strftime("%Y-%m-%d")
+    dates = [(today + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
     
     cached_count = 0
     range_cached_count = 0
     errors = []
     
-    # 店舗ごとのプログラム一覧をキャッシュ（重複取得を避ける）
-    programs_by_studio: dict = {}
-    
     # 各ルームの完全なスケジュールをキャッシュ（range形式）
     for room in choice_rooms:
         room_id = room.get("id")
-        room_studio_id = room.get("studio_id")
-        
         try:
-            # 1. program_id=Noneで基本データをキャッシュし、studio_room_serviceを取得
-            schedule_data = refresh_choice_schedule_range_cache(client, room_id, date_from, date_to, program_id=None)
+            # range cacheを更新（program_id=Noneで基本データ）
+            refresh_choice_schedule_range_cache(client, room_id, date_from, date_to, program_id=None)
             range_cached_count += 1
-            cached_count += days
-            logger.info(f"Refreshed range cache for room {room_id}: {date_from} to {date_to} (program_id=none)")
-            
-            # 2. studio_room_serviceから選択可能プログラムの情報を取得
-            # schedulesは日付をキーとする辞書
-            schedules_dict = schedule_data.get("schedules", {})
-            first_schedule = list(schedules_dict.values())[0] if schedules_dict else {}
-            studio_room_service = first_schedule.get("studio_room_service", {}) if first_schedule else {}
-            selectable_program_type = studio_room_service.get("selectable_program_type")
-            selectable_program_details = studio_room_service.get("selectable_program_details", [])
-            logger.info(f"Room {room_id}: selectable_program_type={selectable_program_type}, details count={len(selectable_program_details)}")
-            
-            # 3. 店舗の予約可能なプログラム一覧を取得（スタッフ・設備が紐づいているもののみ）
-            if room_studio_id not in programs_by_studio:
-                programs_by_studio[room_studio_id] = get_reservable_programs(client, room_studio_id)
-            
-            programs = programs_by_studio.get(room_studio_id, [])
-            
-            # 4. ルームの selectable_program_details でさらにフィルタリング（SELECTEDの場合のみ）
-            if selectable_program_type == "SELECTED" and selectable_program_details:
-                selectable_program_ids = set(p.get("program_id") for p in selectable_program_details)
-                programs = [p for p in programs if p.get("id") in selectable_program_ids]
-                logger.debug(f"Filtered programs by selectable_program_details: {len(programs)} programs for room {room_id}")
-            
-            # 5. 各プログラムIDでもキャッシュを作成
-            for program in programs:
-                program_id = program.get("id")
-                if program_id:
-                    try:
-                        refresh_choice_schedule_range_cache(client, room_id, date_from, date_to, program_id=program_id)
-                        range_cached_count += 1
-                        logger.debug(f"Refreshed range cache for room {room_id}: {date_from} to {date_to} (program_id={program_id})")
-                    except Exception as e:
-                        logger.warning(f"Failed to refresh cache for room {room_id} program {program_id}: {e}")
-            
+            cached_count += days  # 各日付分
+            logger.info(f"Refreshed range cache for room {room_id}: {date_from} to {date_to}")
         except Exception as e:
-            import traceback
             errors.append({"room_id": room_id, "error": str(e)})
-            logger.error(f"Failed to refresh range cache for room {room_id}: {e}\n{traceback.format_exc()}")
+            logger.error(f"Failed to refresh range cache for room {room_id}: {e}")
     
     duration = (datetime.now() - start_time).total_seconds()
     
@@ -686,73 +635,6 @@ def get_cached_programs(client: HacomonoClient, studio_id: int = None) -> list:
         if cached_data is not None:
             return cached_data
         return []
-
-
-def has_selectable_instructors(program: dict) -> bool:
-    """プログラムにスタッフが紐づいているかチェック
-    
-    フロントエンドの hasSelectableInstructors と同じロジック
-    - 設定なし = 全スタッフから選択可能 → True
-    - ALL / RANDOM_ALL = 全スタッフから選択可能 → True
-    - SELECTED / FIXED / RANDOM_SELECTED で items.length > 0 → True
-    - SELECTED / FIXED / RANDOM_SELECTED で items.length === 0 → False
-    """
-    details = program.get("selectable_instructor_details", [])
-    if not details:
-        return True  # 設定なし = 全スタッフから選択可能
-    
-    first_detail = details[0]
-    detail_type = first_detail.get("type", "")
-    
-    if detail_type in ["ALL", "RANDOM_ALL"]:
-        return True  # 全スタッフから選択可能
-    
-    if detail_type in ["SELECTED", "FIXED", "RANDOM_SELECTED"]:
-        items = first_detail.get("items", [])
-        return len(items) > 0
-    
-    return True
-
-
-def has_selectable_resources(program: dict) -> bool:
-    """プログラムに設備が紐づいているかチェック
-    
-    フロントエンドの hasSelectableResources と同じロジック
-    - 設定なし = 設備が紐づいていない → False
-    - ALL / RANDOM_ALL = 明示的に紐づいていない → False
-    - 全ての設定で SELECTED / FIXED / RANDOM_SELECTED かつ items.length > 0 → True
-    """
-    details = program.get("selectable_resource_details", [])
-    if not details:
-        return False  # 設定なし = 設備が紐づいていない
-    
-    # 全ての設定で少なくとも1つの設備が紐づいているかチェック
-    for detail in details:
-        detail_type = detail.get("type", "")
-        
-        if detail_type in ["ALL", "RANDOM_ALL"]:
-            return False  # 全設備から選択 = 明示的に紐づいていない
-        
-        if detail_type in ["SELECTED", "FIXED", "RANDOM_SELECTED"]:
-            items = detail.get("items", [])
-            if len(items) == 0:
-                return False
-    
-    return True
-
-
-def is_program_fully_configured(program: dict) -> bool:
-    """プログラムが予約可能か判定（スタッフと設備が紐づいているか）
-    
-    フロントエンドの isProgramFullyConfigured と同じロジック
-    """
-    return has_selectable_instructors(program) and has_selectable_resources(program)
-
-
-def get_reservable_programs(client: HacomonoClient, studio_id: int) -> list:
-    """予約可能なプログラム一覧を取得（スタッフと設備が紐づいているもののみ）"""
-    programs = get_cached_programs(client, studio_id)
-    return [p for p in programs if is_program_fully_configured(p)]
 
 
 def get_cached_studio_rooms(client: HacomonoClient, studio_id: int = None) -> list:
@@ -1286,7 +1168,7 @@ def send_reservation_email(
 
 ■予約確認URL
 {detail_url}
-{line_section}
+{mypage_section}{line_section}
 【当日の注意事項について】
  ・持病がある方に関しては施術によっては医師の同意書が必要になります。
 ・妊娠中の方の施術はお断りさせていただいております。
@@ -1504,228 +1386,6 @@ def send_slack_notification(
         logger.error(f"Unexpected error sending Slack notification: {e}", exc_info=True)
 
 
-# ==================== Google Sheets連携 ====================
-
-# Google Sheets クライアント（シングルトン）
-_gspread_client = None
-_gspread_worksheet = None
-
-def get_gspread_worksheet():
-    """Google Sheetsのワークシートを取得（シングルトン）"""
-    global _gspread_client, _gspread_worksheet
-    
-    if not GSPREAD_AVAILABLE:
-        logger.warning("gspread is not installed, skipping Google Sheets integration")
-        return None
-    
-    spreadsheet_id = os.environ.get("GOOGLE_SPREADSHEET_ID")
-    if not spreadsheet_id:
-        logger.warning("GOOGLE_SPREADSHEET_ID is not set, skipping Google Sheets integration")
-        return None
-    
-    if _gspread_worksheet is not None:
-        return _gspread_worksheet
-    
-    try:
-        scopes = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive'
-        ]
-        
-        # 環境変数から認証情報を取得（JSON文字列として）
-        credentials_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-        
-        if credentials_json:
-            # 環境変数からJSON文字列として読み込み
-            import json as json_module
-            credentials_info = json_module.loads(credentials_json)
-            credentials = Credentials.from_service_account_info(credentials_info, scopes=scopes)
-            logger.info("Using Google credentials from GOOGLE_SERVICE_ACCOUNT_JSON environment variable")
-        else:
-            # ファイルからの読み込み（フォールバック）
-            credentials_path = os.environ.get(
-                "GOOGLE_SERVICE_ACCOUNT_FILE",
-                os.path.join(os.path.dirname(__file__), "asmy-483410-b42feb85af6e.json")
-            )
-            
-            if not os.path.exists(credentials_path):
-                logger.error(f"Google service account file not found: {credentials_path}")
-                return None
-            
-            credentials = Credentials.from_service_account_file(credentials_path, scopes=scopes)
-            logger.info(f"Using Google credentials from file: {credentials_path}")
-        
-        # gspreadクライアントを作成
-        _gspread_client = gspread.authorize(credentials)
-        
-        # スプレッドシートを開く
-        spreadsheet = _gspread_client.open_by_key(spreadsheet_id)
-        
-        # シート名を環境変数から取得（デフォルト: "予約履歴"）
-        sheet_name = os.environ.get("GOOGLE_SHEET_NAME", "予約履歴")
-        
-        try:
-            _gspread_worksheet = spreadsheet.worksheet(sheet_name)
-        except gspread.exceptions.WorksheetNotFound:
-            # シートが存在しない場合は作成
-            _gspread_worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=15)
-            # ヘッダー行を追加
-            headers = [
-                "記録日時",
-                "ステータス",
-                "予約ID",
-                "お客様名",
-                "メールアドレス",
-                "電話番号",
-                "店舗名",
-                "予約日",
-                "予約時間",
-                "施術コース",
-                "担当スタッフ",
-                "エラーコード",
-                "エラーメッセージ"
-            ]
-            _gspread_worksheet.append_row(headers)
-            logger.info(f"Created new worksheet '{sheet_name}' with headers")
-        
-        logger.info(f"Google Sheets worksheet initialized: {sheet_name}")
-        return _gspread_worksheet
-        
-    except Exception as e:
-        logger.error(f"Failed to initialize Google Sheets: {e}", exc_info=True)
-        return None
-
-
-def append_reservation_to_spreadsheet(
-    status: str,  # "success" or "error"
-    reservation_id: int = None,
-    guest_name: str = "",
-    guest_email: str = "",
-    guest_phone: str = "",
-    studio_name: str = "",
-    reservation_date: str = "",
-    reservation_time: str = "",
-    program_name: str = "",
-    instructor_names: str = "",
-    error_message: str = "",
-    error_code: str = ""
-):
-    """予約情報をGoogle Spreadsheetに追記
-    
-    Slackに送信しているのと同じ情報をスプレッドシートの最終行に追加します。
-    
-    Args:
-        status: "success" または "error"
-        reservation_id: 予約ID
-        guest_name: ゲスト名
-        guest_email: メールアドレス
-        guest_phone: 電話番号
-        studio_name: 店舗名
-        reservation_date: 予約日
-        reservation_time: 予約時間
-        program_name: 施術コース名
-        instructor_names: 担当スタッフ名（カンマ区切り）
-        error_message: エラーメッセージ（エラー時）
-        error_code: エラーコード（エラー時）
-    """
-    try:
-        worksheet = get_gspread_worksheet()
-        if worksheet is None:
-            return
-        
-        # 記録日時
-        recorded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # ステータス
-        status_text = "予約成功" if status == "success" else "予約失敗"
-        
-        # 行データを作成
-        row_data = [
-            recorded_at,
-            status_text,
-            str(reservation_id) if reservation_id else "",
-            guest_name or "",
-            guest_email or "",
-            guest_phone or "",
-            studio_name or "",
-            reservation_date or "",
-            reservation_time or "",
-            program_name or "",
-            instructor_names or "",
-            error_code or "",
-            error_message or ""
-        ]
-        
-        # 最終行に追記
-        worksheet.append_row(row_data, value_input_option='USER_ENTERED')
-        
-        logger.info(f"Reservation data appended to Google Sheets: reservation_id={reservation_id}, status={status}")
-        
-    except Exception as e:
-        logger.error(f"Failed to append reservation to Google Sheets: {e}", exc_info=True)
-        # Slackにエラー通知（予約処理には影響しない）
-        try:
-            send_spreadsheet_error_to_slack(
-                reservation_id=reservation_id,
-                guest_name=guest_name,
-                error_message=str(e)
-            )
-        except Exception as slack_err:
-            logger.error(f"Failed to send spreadsheet error to Slack: {slack_err}")
-
-
-def send_spreadsheet_error_to_slack(
-    reservation_id: int = None,
-    guest_name: str = "",
-    error_message: str = ""
-):
-    """スプレッドシート書き込みエラーをSlackに通知
-    
-    予約処理自体には影響を与えずに、エラーを通知するための関数
-    """
-    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
-    
-    if not webhook_url:
-        return
-    
-    try:
-        payload = {
-            "text": "⚠️ スプレッドシート書き込みエラー",
-            "attachments": [
-                {
-                    "color": "#ffcc00",  # 黄色（警告）
-                    "title": "📊 Google Spreadsheet エラー",
-                    "fields": [
-                        {
-                            "title": "予約ID",
-                            "value": str(reservation_id) if reservation_id else "N/A",
-                            "short": True
-                        },
-                        {
-                            "title": "お客様名",
-                            "value": guest_name or "N/A",
-                            "short": True
-                        },
-                        {
-                            "title": "エラー内容",
-                            "value": error_message[:500] if error_message else "不明なエラー",
-                            "short": False
-                        }
-                    ],
-                    "footer": "予約は正常に完了しています",
-                    "ts": int(datetime.now().timestamp())
-                }
-            ]
-        }
-        
-        response = requests.post(webhook_url, json=payload, timeout=5)
-        response.raise_for_status()
-        logger.info(f"Spreadsheet error notification sent to Slack for reservation {reservation_id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to send spreadsheet error notification to Slack: {e}")
-
-
 def send_email_log_to_slack(
     reservation_id: int,
     guest_email: str,
@@ -1829,229 +1489,6 @@ def send_email_log_to_slack(
         logger.error(f"Unexpected error sending email log to Slack: {e}")
 
 
-def get_studio_notification_email(client: HacomonoClient, studio_id: int) -> str | None:
-    """店舗のカスタム属性からメールアドレスを取得
-    
-    hacomonoの店舗データのattrs内のkey="email"のvalueを返す
-    取得できない場合はNoneを返す
-    
-    Args:
-        client: hacomonoクライアント
-        studio_id: 店舗ID
-        
-    Returns:
-        str | None: メールアドレス（取得できない場合はNone）
-    """
-    try:
-        studio_response = client.get_studio(studio_id)
-        studio_data = studio_response.get("data", {}).get("studio", {})
-        attrs = studio_data.get("attrs", [])
-        
-        for attr in attrs:
-            if attr.get("key") == "email" and attr.get("value"):
-                email = attr.get("value")
-                logger.info(f"Found notification email for studio {studio_id}: {email}")
-                return email
-        
-        logger.info(f"No notification email found in attrs for studio {studio_id}")
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to get notification email for studio {studio_id}: {e}")
-        return None
-
-
-def send_staff_notification_email(
-    client: HacomonoClient,
-    studio_id: int,
-    reservation_id: int,
-    guest_name: str,
-    guest_email: str,
-    guest_phone: str,
-    studio_name: str,
-    program_name: str,
-    reservation_date: str,
-    reservation_time: str,
-    duration_minutes: int = 0,
-    price: int = 0,
-    instructor_names: str = "",
-    resource_names: str = ""
-) -> dict:
-    """店舗スタッフ向けの予約通知メールを送信
-    
-    店舗のカスタム属性（attrs）の key="email" に設定されたアドレスにメール送信
-    Slack通知と同じタイミングで呼び出される
-    メールアドレスが取得できない場合は送信しない
-    
-    Args:
-        client: hacomonoクライアント
-        studio_id: 店舗ID
-        reservation_id: 予約ID
-        guest_name: お客様名
-        guest_email: お客様メールアドレス
-        guest_phone: お客様電話番号
-        studio_name: 店舗名
-        program_name: メニュー名
-        reservation_date: 予約日
-        reservation_time: 予約時間
-        duration_minutes: 所要時間（分）
-        price: 料金
-        instructor_names: 担当スタッフ名（カンマ区切り）
-        resource_names: 使用設備名（カンマ区切り）
-    
-    Returns:
-        dict: {"success": bool, "message_id": str or None, "error": str or None}
-    """
-    # 店舗のカスタム属性からメールアドレスを取得
-    staff_email = get_studio_notification_email(client, studio_id)
-    
-    if not staff_email:
-        logger.info(f"No notification email for studio {studio_id}, skipping staff notification email")
-        return {"success": True, "message_id": None, "error": "No email configured (skipped)"}
-    
-    # 件名
-    subject = f"【予約通知】{guest_name}様 - {reservation_date} {reservation_time}"
-    
-    # 本文
-    duration_text = f"{duration_minutes}分" if duration_minutes else "未設定"
-    price_text = f"¥{price:,}" if price else "未設定"
-    instructor_text = instructor_names if instructor_names else "未設定"
-    resource_text = resource_names if resource_names else "未設定"
-    
-    body_text = f"""【新規予約が入りました】
-
-━━━━━━━━━━━━━━━━━━━━━━━━
-　予約情報
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-■ 予約ID: {reservation_id}
-■ 店舗: {studio_name}
-
-■ お客様情報
-　・お名前: {guest_name}様
-　・メール: {guest_email}
-　・電話番号: {guest_phone}
-
-■ 予約内容
-　・予約日: {reservation_date}
-　・予約時間: {reservation_time}
-　・メニュー: {program_name}
-　・所要時間: {duration_text}
-　・料金: {price_text}
-
-■ 担当
-　・スタッフ: {instructor_text}
-　・設備: {resource_text}
-
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-このメールは予約システムから自動送信されています。
-"""
-    
-    try:
-        result = send_email_via_ses(
-            to_email=staff_email,
-            subject=subject,
-            body_text=body_text
-        )
-        
-        if result.get("success"):
-            logger.info(f"Staff notification email sent to {staff_email} for reservation {reservation_id}")
-        else:
-            logger.error(f"Failed to send staff notification email: {result.get('error')}")
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error sending staff notification email: {e}")
-        return {"success": False, "message_id": None, "error": str(e)}
-
-
-def send_cancel_notification_email(
-    client: HacomonoClient,
-    studio_id: int,
-    reservation_id: int,
-    guest_name: str,
-    guest_email: str,
-    guest_phone: str,
-    studio_name: str,
-    program_name: str,
-    reservation_date: str,
-    reservation_time: str
-) -> dict:
-    """店舗スタッフ向けのキャンセル通知メールを送信
-    
-    店舗のカスタム属性（attrs）の key="email" に設定されたアドレスにメール送信
-    メールアドレスが取得できない場合は送信しない
-    
-    Args:
-        client: hacomonoクライアント
-        studio_id: 店舗ID
-        reservation_id: 予約ID
-        guest_name: お客様名
-        guest_email: お客様メールアドレス
-        guest_phone: お客様電話番号
-        studio_name: 店舗名
-        program_name: メニュー名
-        reservation_date: 予約日
-        reservation_time: 予約時間
-    
-    Returns:
-        dict: {"success": bool, "message_id": str or None, "error": str or None}
-    """
-    # 店舗のカスタム属性からメールアドレスを取得
-    staff_email = get_studio_notification_email(client, studio_id)
-    
-    if not staff_email:
-        logger.info(f"No notification email for studio {studio_id}, skipping cancel notification email")
-        return {"success": True, "message_id": None, "error": "No email configured (skipped)"}
-    
-    # 件名
-    subject = f"【キャンセル通知】{guest_name}様 - {reservation_date} {reservation_time}"
-    
-    # 本文
-    body_text = f"""【予約がキャンセルされました】
-
-━━━━━━━━━━━━━━━━━━━━━━━━
-　キャンセル情報
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-■ 予約ID: {reservation_id}
-■ 店舗: {studio_name}
-
-■ お客様情報
-　・お名前: {guest_name}様
-　・メール: {guest_email}
-　・電話番号: {guest_phone}
-
-■ キャンセルされた予約
-　・予約日: {reservation_date}
-　・予約時間: {reservation_time}
-　・メニュー: {program_name}
-
-━━━━━━━━━━━━━━━━━━━━━━━━
-
-このメールは予約システムから自動送信されています。
-"""
-    
-    try:
-        result = send_email_via_ses(
-            to_email=staff_email,
-            subject=subject,
-            body_text=body_text
-        )
-        
-        if result.get("success"):
-            logger.info(f"Cancel notification email sent to {staff_email} for reservation {reservation_id}")
-        else:
-            logger.error(f"Failed to send cancel notification email: {result.get('error')}")
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error sending cancel notification email: {e}")
-        return {"success": False, "message_id": None, "error": str(e)}
-
-
 # ==================== ヘルスチェック ====================
 
 @app.route("/api/health", methods=["GET"])
@@ -2099,28 +1536,13 @@ def refresh_cache():
                 return jsonify({"error": "Invalid studio_ids format. Use comma-separated integers."}), 400
         
         logger.info(f"Starting cache refresh for {days} days, studio_ids={studio_ids}")
-        
-        # フロントエンドのリクエストパターンに合わせて今週・来週を別々に更新
-        # これにより、キャッシュキーが完全一致してキャッシュヒット率が向上する
-        result_this_week = refresh_all_choice_schedule_cache(client, days=7, studio_ids=studio_ids)
-        logger.info(f"This week cache refresh completed: {result_this_week['total_cached']} schedules cached")
-        
-        result_next_week = refresh_all_choice_schedule_cache(client, days=7, studio_ids=studio_ids, start_offset_days=7)
-        logger.info(f"Next week cache refresh completed: {result_next_week['total_cached']} schedules cached")
-        
-        # 結果を集約
-        combined_result = {
-            "success": result_this_week["success"] and result_next_week["success"],
-            "total_cached": result_this_week["total_cached"] + result_next_week["total_cached"],
-            "this_week": result_this_week,
-            "next_week": result_next_week
-        }
+        result = refresh_all_choice_schedule_cache(client, days=days, studio_ids=studio_ids)
         
         return jsonify({
-            "success": combined_result["success"],
-            "message": f"Cache refresh completed: {combined_result['total_cached']} schedules cached (this week: {result_this_week['total_cached']}, next week: {result_next_week['total_cached']})",
-            **combined_result
-        }), 200 if combined_result["success"] else 207  # 207 = Multi-Status (部分成功)
+            "success": result["success"],
+            "message": f"Cache refresh completed: {result['total_cached']} schedules cached",
+            **result
+        }), 200 if result["success"] else 207  # 207 = Multi-Status (部分成功)
     
     except Exception as e:
         logger.error(f"Cache refresh failed: {e}")
@@ -2222,8 +1644,7 @@ def verify_hacomono_webhook_signature(body: bytes, x_webhook_event: str, secret:
             return False, f"Unsupported signature algorithm: {signature_algorithm}"
         
         # タイムスタンプの検証（5分以内のリクエストのみ受け付け）
-        # hacomonoはJSTでタイムスタンプを送信するため、ローカル時刻で比較
-        current_time = int(datetime.now().timestamp())
+        current_time = int(datetime.utcnow().timestamp())
         if abs(current_time - timestamp) > 300:  # 5分 = 300秒
             logger.warning(f"Webhook timestamp too old: {timestamp}, current: {current_time}")
             return False, "Timestamp too old (possible replay attack)"
@@ -2257,21 +1678,11 @@ def refresh_cache_for_webhook():
     
     予約関連のイベント（予約完了・変更・キャンセル）を受信した際に
     全店舗の今週・来週のスケジュールキャッシュをリフレッシュする
-    
-    注意: フロントエンドは今週(0-6日)と来週(7-13日)を別々のキャッシュキーでリクエストするため、
-    14日間一括ではなく、今週・来週を分けてキャッシュを更新する必要がある
     """
     try:
         client = get_hacomono_client()
-        
-        # フロントエンドのリクエストパターンに合わせて今週・来週を分けてキャッシュ
-        # 今週: today ~ today+6
-        result1 = refresh_all_choice_schedule_cache(client, days=7)
-        logger.info(f"Webhook cache refresh (this week) completed: {result1}")
-        
-        # 来週: today+7 ~ today+13
-        result2 = refresh_all_choice_schedule_cache(client, days=7, start_offset_days=7)
-        logger.info(f"Webhook cache refresh (next week) completed: {result2}")
+        result = refresh_all_choice_schedule_cache(client, days=14)
+        logger.info(f"Webhook cache refresh completed: {result}")
     except Exception as e:
         logger.error(f"Webhook cache refresh failed: {e}")
 
@@ -2289,7 +1700,7 @@ def hacomono_webhook():
     
     開発環境:
         URL: http://localhost:5011/webhook
-        シークレット: LgXlSZxYolYGqoPtAnGnJmMd1jSZOony
+        シークレット: xccFY7CW5Ej1eyTAKtDgsNYJPWG7kUVn
     
     本番環境:
         URL: https://happle-reservation-backend.onrender.com/webhook
@@ -2871,11 +2282,16 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
     Args:
         gender: 性別（1: 男性, 2: 女性）デフォルト: 2（女性）
         ticket_id: 付与するチケットID（デフォルト: 5 = Web予約用チケット）
+    
+    Returns:
+        tuple: (member_id, member_ticket_id, generated_password)
+               generated_password は新規作成時のみ設定され、既存メンバーの場合は None
     """
     import secrets
     import string
     
     member_id = None
+    generated_password = None  # 新規登録時のパスワード
     
     # まず、メールアドレスで既存メンバーを検索
     try:
@@ -2934,6 +2350,8 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
             raise ValueError("メンバーの作成に失敗しました")
         
         logger.info(f"Created new member ID: {member_id}")
+        # 新規登録成功時にパスワードを保存（メール通知用）
+        generated_password = random_password
     
     # 2. チケットを付与（指定されたチケットID、またはデフォルトのWeb予約用チケット）
     try:
@@ -2945,7 +2363,7 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
         logger.warning(f"Failed to grant ticket {ticket_id}: {e}")
         member_ticket_id = None
     
-    return member_id, member_ticket_id
+    return member_id, member_ticket_id, generated_password
 
 
 @app.route("/api/reservations", methods=["POST"])
@@ -3038,7 +2456,7 @@ def create_reservation():
     
     # 2. ゲストメンバーを作成してチケットを付与
     try:
-        member_id, member_ticket_id = _create_guest_member(
+        member_id, member_ticket_id, generated_password = _create_guest_member(
             client=client,
             guest_name=data["guest_name"],
             guest_email=data["guest_email"],
@@ -3332,7 +2750,8 @@ def create_reservation():
             price=price,
             line_url=line_url,
             base_url=base_url,
-            studio_contact_info=studio_contact_info
+            studio_contact_info=studio_contact_info,
+            generated_password=generated_password
         )
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
@@ -3355,38 +2774,6 @@ def create_reservation():
         reservation_time=reservation_time,
         program_name=program_name
     )
-    
-    # Google Spreadsheetに記録
-    append_reservation_to_spreadsheet(
-        status="success",
-        reservation_id=reservation_id,
-        guest_name=data.get("guest_name", ""),
-        guest_email=data.get("guest_email", ""),
-        guest_phone=data.get("guest_phone", ""),
-        studio_name=studio_name,
-        reservation_date=reservation_date,
-        reservation_time=reservation_time,
-        program_name=program_name
-    )
-    
-    # 店舗スタッフ向けメール通知（店舗のカスタム属性からメールアドレスを取得）
-    try:
-        send_staff_notification_email(
-            client=client,
-            studio_id=studio_id,
-            reservation_id=reservation_id,
-            guest_name=data.get("guest_name", ""),
-            guest_email=data.get("guest_email", ""),
-            guest_phone=data.get("guest_phone", ""),
-            studio_name=studio_name,
-            program_name=program_name,
-            reservation_date=reservation_date,
-            reservation_time=reservation_time,
-            duration_minutes=duration_minutes,
-            price=price
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send staff notification email: {e}")
     
     return jsonify({
         "success": True,
@@ -3651,6 +3038,7 @@ def create_choice_reservation():
     
     # 1. まず既存のメンバーを検索
     member_id = None
+    generated_password = None  # 新規登録時に生成されたパスワード（メール通知用）
     try:
         logger.info(f"Searching for existing member with email: {guest_email}")
         members_response = client.get_members({"mail_address": guest_email})
@@ -3696,6 +3084,8 @@ def create_choice_reservation():
             member_response = client.create_member(member_data)
             member_id = member_response.get("data", {}).get("member", {}).get("id")
             logger.info(f"Created new member ID: {member_id}")
+            # 新規登録成功時にパスワードを保存（メール通知用）
+            generated_password = random_password
         except HacomonoAPIError as e:
             logger.error(f"Failed to create member: {e}")
             logger.error(f"Member creation API response body: {e.response_body}")
@@ -4094,7 +3484,8 @@ def create_choice_reservation():
             price=price,
             line_url=line_url,
             base_url=base_url,
-            studio_contact_info=studio_contact_info
+            studio_contact_info=studio_contact_info,
+            generated_password=generated_password
         )
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
@@ -4124,46 +3515,10 @@ def create_choice_reservation():
                 # まず既存キャッシュを無効化
                 reservation_date_for_cache = start_at.split(" ")[0]
                 invalidate_choice_schedule_cache(studio_room_id, reservation_date_for_cache)
-                
-                # 今週の基本データをキャッシュし、studio_room_serviceを取得
-                schedule_data = refresh_choice_schedule_range_cache(bg_client, studio_room_id, week1_from, week1_to, program_id=None)
-                
-                # studio_room_serviceから選択可能プログラムの情報を取得
-                # schedulesは日付をキーとする辞書
-                schedules_dict = schedule_data.get("schedules", {})
-                first_schedule = list(schedules_dict.values())[0] if schedules_dict else {}
-                studio_room_service = first_schedule.get("studio_room_service", {}) if first_schedule else {}
-                selectable_program_type = studio_room_service.get("selectable_program_type")
-                selectable_program_details = studio_room_service.get("selectable_program_details", [])
-                
-                # 店舗の予約可能なプログラム一覧を取得（スタッフ・設備が紐づいているもののみ）
-                programs = get_reservable_programs(bg_client, studio_id)
-                
-                # ルームの selectable_program_details でさらにフィルタリング（SELECTEDの場合のみ）
-                if selectable_program_type == "SELECTED" and selectable_program_details:
-                    selectable_program_ids = set(p.get("program_id") for p in selectable_program_details)
-                    programs = [p for p in programs if p.get("id") in selectable_program_ids]
-                
-                # 各プログラムIDでキャッシュ更新（今週分）
-                for program in programs:
-                    pid = program.get("id")
-                    if pid:
-                        try:
-                            refresh_choice_schedule_range_cache(bg_client, studio_room_id, week1_from, week1_to, program_id=pid)
-                        except Exception as e:
-                            logger.warning(f"Failed to refresh cache for program {pid}: {e}")
-                
-                # 来週分も同様にキャッシュ（基本データ + 各プログラムID）
+                # 今週と来週の両方をキャッシュ更新
+                refresh_choice_schedule_range_cache(bg_client, studio_room_id, week1_from, week1_to, program_id=None)
                 refresh_choice_schedule_range_cache(bg_client, studio_room_id, week2_from, week2_to, program_id=None)
-                for program in programs:
-                    pid = program.get("id")
-                    if pid:
-                        try:
-                            refresh_choice_schedule_range_cache(bg_client, studio_room_id, week2_from, week2_to, program_id=pid)
-                        except Exception as e:
-                            logger.warning(f"Failed to refresh cache for program {pid}: {e}")
-                
-                logger.info(f"Cache refreshed (2 weeks, {len(programs) + 1} program variants) after reservation for room {studio_room_id}")
+                logger.info(f"Cache refreshed (2 weeks) after reservation for room {studio_room_id}")
             except Exception as e:
                 logger.warning(f"Failed to refresh cache in background: {e}")
         
@@ -4185,38 +3540,6 @@ def create_choice_reservation():
         reservation_time=reservation_time,
         program_name=program_name
     )
-    
-    # Google Spreadsheetに記録
-    append_reservation_to_spreadsheet(
-        status="success",
-        reservation_id=reservation_id,
-        guest_name=guest_name,
-        guest_email=guest_email,
-        guest_phone=guest_phone,
-        studio_name=studio_name,
-        reservation_date=reservation_date,
-        reservation_time=reservation_time,
-        program_name=program_name
-    )
-    
-    # 店舗スタッフ向けメール通知（店舗のカスタム属性からメールアドレスを取得）
-    try:
-        send_staff_notification_email(
-            client=client,
-            studio_id=studio_id,
-            reservation_id=reservation_id,
-            guest_name=guest_name,
-            guest_email=guest_email,
-            guest_phone=guest_phone,
-            studio_name=studio_name,
-            program_name=program_name,
-            reservation_date=reservation_date,
-            reservation_time=reservation_time,
-            duration_minutes=duration_minutes,
-            price=price
-        )
-    except Exception as e:
-        logger.warning(f"Failed to send staff notification email: {e}")
     
     return jsonify({
         "success": True,
@@ -4265,17 +3588,11 @@ def cancel_reservation(reservation_id: int):
         }), 400
     
     # メンバー情報を取得してハッシュを検証
-    guest_name = ""
-    guest_email = ""
-    guest_phone = ""
     try:
         member_response = client.get_member(member_id)
         member_data = member_response.get("data", {}).get("member", {})
         member_email = member_data.get("mail_address", "")
         member_phone = member_data.get("tel", "")
-        guest_name = f"{member_data.get('last_name', '')} {member_data.get('first_name', '')}".strip()
-        guest_email = member_email
-        guest_phone = member_phone
         
         if not verify_hash(member_email, member_phone, provided_verify):
             logger.warning(f"Hash verification failed for reservation {reservation_id}, member {member_id}")
@@ -4292,72 +3609,7 @@ def cancel_reservation(reservation_id: int):
             "message": "認証処理中にエラーが発生しました"
         }), 500
     
-    # キャンセル前に予約情報を取得（通知用）
-    studio_id = None
-    studio_name = ""
-    program_name = ""
-    reservation_date = ""
-    reservation_time = ""
-    try:
-        res_response = client.get_reservation(reservation_id)
-        reservation_data = res_response.get("data", {}).get("reservation", {})
-        
-        # 日時の取得
-        start_at = reservation_data.get("start_at", "")
-        if start_at:
-            try:
-                start_dt = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
-                reservation_date = start_dt.strftime("%Y-%m-%d(%a)")
-                reservation_time = start_dt.strftime("%H:%M")
-            except:
-                pass
-        
-        # レッスン情報から店舗・プログラム情報を取得
-        studio_lesson_id = reservation_data.get("studio_lesson_id")
-        if studio_lesson_id:
-            try:
-                lesson_response = client.get_studio_lesson(studio_lesson_id)
-                lesson_data = lesson_response.get("data", {}).get("studio_lesson", {})
-                
-                # 店舗情報
-                lesson_studio_id = lesson_data.get("studio_id")
-                if lesson_studio_id:
-                    studio_id = lesson_studio_id
-                    studio_response = client.get_studio(studio_id)
-                    studio_data = studio_response.get("data", {}).get("studio", {})
-                    studio_name = studio_data.get("name", "")
-                
-                # プログラム情報
-                program_id = lesson_data.get("program_id")
-                if program_id:
-                    program_response = client.get_program(program_id)
-                    program_data = program_response.get("data", {}).get("program", {})
-                    program_name = program_data.get("name", "")
-            except Exception as e:
-                logger.warning(f"Failed to get lesson info for cancel notification: {e}")
-    except Exception as e:
-        logger.warning(f"Failed to get reservation info for cancel notification: {e}")
-    
-    # キャンセルを実行
     response = client.cancel_reservation(member_id, [reservation_id])
-    
-    # キャンセル通知メールを送信（店舗のカスタム属性からメールアドレスを取得）
-    if studio_id:
-        try:
-            send_cancel_notification_email(
-                client=client,
-                studio_id=studio_id,
-                reservation_id=reservation_id,
-                guest_name=guest_name,
-                guest_email=guest_email,
-                guest_phone=guest_phone,
-                studio_name=studio_name,
-                program_name=program_name,
-                reservation_date=reservation_date,
-                reservation_time=reservation_time
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send cancel notification email: {e}")
     
     return jsonify({
         "success": True,
