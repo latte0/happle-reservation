@@ -1201,7 +1201,8 @@ def send_reservation_email(
     price: int = 0,
     line_url: str = "",
     base_url: str = "",
-    studio_contact_info: dict = None
+    studio_contact_info: dict = None,
+    generated_password: str = None
 ):
     """予約完了メールを送信（SES使用）+ Slack通知
     
@@ -1222,6 +1223,7 @@ def send_reservation_email(
         line_url: LINE URL（空の場合はLINE関連セクションを除外）
         base_url: 予約確認用ベースURL
         studio_contact_info: 店舗連絡先情報（get_studio_contact_infoで取得）
+        generated_password: 新規登録時に生成したパスワード（既存メンバーの場合はNone）
     
     Returns:
         dict: メール送信結果 {"success": bool, "message_id": str, "error": str}
@@ -1259,6 +1261,26 @@ def send_reservation_email(
         line_section = ""
         cancel_line_note = "◆キャンセルはご予約日の前日18時までにご連絡くださいませ。"
     
+    # 新規登録時のみマイページログイン情報を追加
+    if generated_password:
+        mypage_section = f"""
+【マイページログイン情報】
+2回目以降のご予約やキャンセルはマイページから行えます。
+
+▼マイページURL
+https://asmy.hacomono.jp/
+
+▼ログイン情報
+メールアドレス: {guest_email}
+パスワード: {generated_password}
+
+※セキュリティのため、初回ログイン後にパスワード変更をお勧めします。
+※マイページではご予約の確認・変更・キャンセルが可能です。
+
+"""
+    else:
+        mypage_section = ""
+    
     email_content = f"""{guest_name}　様
 
 この度は「{studio_name}」にご予約いただき誠にありがとうございます。
@@ -1286,7 +1308,7 @@ def send_reservation_email(
 
 ■予約確認URL
 {detail_url}
-{line_section}
+{mypage_section}{line_section}
 【当日の注意事項について】
  ・持病がある方に関しては施術によっては医師の同意書が必要になります。
 ・妊娠中の方の施術はお断りさせていただいております。
@@ -2871,11 +2893,16 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
     Args:
         gender: 性別（1: 男性, 2: 女性）デフォルト: 2（女性）
         ticket_id: 付与するチケットID（デフォルト: 5 = Web予約用チケット）
+    
+    Returns:
+        tuple: (member_id, member_ticket_id, generated_password)
+               generated_password は新規作成時のみ設定され、既存メンバーの場合は None
     """
     import secrets
     import string
     
     member_id = None
+    generated_password = None  # 新規登録時のパスワード
     
     # まず、メールアドレスで既存メンバーを検索
     try:
@@ -2934,6 +2961,8 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
             raise ValueError("メンバーの作成に失敗しました")
         
         logger.info(f"Created new member ID: {member_id}")
+        # 新規登録成功時にパスワードを保存（メール通知用）
+        generated_password = random_password
     
     # 2. チケットを付与（指定されたチケットID、またはデフォルトのWeb予約用チケット）
     try:
@@ -2945,7 +2974,7 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
         logger.warning(f"Failed to grant ticket {ticket_id}: {e}")
         member_ticket_id = None
     
-    return member_id, member_ticket_id
+    return member_id, member_ticket_id, generated_password
 
 
 @app.route("/api/reservations", methods=["POST"])
@@ -3038,7 +3067,7 @@ def create_reservation():
     
     # 2. ゲストメンバーを作成してチケットを付与
     try:
-        member_id, member_ticket_id = _create_guest_member(
+        member_id, member_ticket_id, generated_password = _create_guest_member(
             client=client,
             guest_name=data["guest_name"],
             guest_email=data["guest_email"],
@@ -3332,7 +3361,8 @@ def create_reservation():
             price=price,
             line_url=line_url,
             base_url=base_url,
-            studio_contact_info=studio_contact_info
+            studio_contact_info=studio_contact_info,
+            generated_password=generated_password
         )
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
@@ -3651,6 +3681,7 @@ def create_choice_reservation():
     
     # 1. まず既存のメンバーを検索
     member_id = None
+    generated_password = None  # 新規登録時に生成されたパスワード（メール通知用）
     try:
         logger.info(f"Searching for existing member with email: {guest_email}")
         members_response = client.get_members({"mail_address": guest_email})
@@ -3696,6 +3727,8 @@ def create_choice_reservation():
             member_response = client.create_member(member_data)
             member_id = member_response.get("data", {}).get("member", {}).get("id")
             logger.info(f"Created new member ID: {member_id}")
+            # 新規登録成功時にパスワードを保存（メール通知用）
+            generated_password = random_password
         except HacomonoAPIError as e:
             logger.error(f"Failed to create member: {e}")
             logger.error(f"Member creation API response body: {e.response_body}")
@@ -4094,7 +4127,8 @@ def create_choice_reservation():
             price=price,
             line_url=line_url,
             base_url=base_url,
-            studio_contact_info=studio_contact_info
+            studio_contact_info=studio_contact_info,
+            generated_password=generated_password
         )
     except Exception as e:
         logger.warning(f"Failed to send email mock: {e}")
