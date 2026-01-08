@@ -53,6 +53,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.json.ensure_ascii = False  # 日本語をUnicodeエスケープしない
 
+# 会員登録時のデフォルト生年月日（空文字の場合は送信しない）
+MEMBER_DEFAULT_BIRTHDAY = os.environ.get("MEMBER_DEFAULT_BIRTHDAY", "").strip()
+
 # CORS設定
 CORS(app, 
      origins=os.environ.get("CORS_ORIGINS", "*").split(","),
@@ -1264,18 +1267,12 @@ def send_reservation_email(
     # 新規登録時のみマイページログイン情報を追加
     if generated_password:
         mypage_section = f"""
-【マイページログイン情報】
-2回目以降のご予約やキャンセルはマイページから行えます。
-
-▼マイページURL
-https://asmy.hacomono.jp/
-
 ▼ログイン情報
 メールアドレス: {guest_email}
-パスワード: {generated_password}
+初期パスワード: {generated_password}
 
-※セキュリティのため、初回ログイン後にパスワード変更をお勧めします。
-※マイページではご予約の確認・変更・キャンセルが可能です。
+▼パスワード変更はこちら
+https://asmy.hacomono.jp/mypage/password-change
 
 """
     else:
@@ -1605,7 +1602,8 @@ def get_gspread_worksheet():
                 "施術コース",
                 "担当スタッフ",
                 "エラーコード",
-                "エラーメッセージ"
+                "エラーメッセージ",
+                "仮発行パスワード"
             ]
             _gspread_worksheet.append_row(headers)
             logger.info(f"Created new worksheet '{sheet_name}' with headers")
@@ -1630,7 +1628,8 @@ def append_reservation_to_spreadsheet(
     program_name: str = "",
     instructor_names: str = "",
     error_message: str = "",
-    error_code: str = ""
+    error_code: str = "",
+    generated_password: str = ""
 ):
     """予約情報をGoogle Spreadsheetに追記
     
@@ -1649,6 +1648,7 @@ def append_reservation_to_spreadsheet(
         instructor_names: 担当スタッフ名（カンマ区切り）
         error_message: エラーメッセージ（エラー時）
         error_code: エラーコード（エラー時）
+        generated_password: 仮発行パスワード（新規登録時のみ）
     """
     try:
         worksheet = get_gspread_worksheet()
@@ -1675,7 +1675,8 @@ def append_reservation_to_spreadsheet(
             program_name or "",
             instructor_names or "",
             error_code or "",
-            error_message or ""
+            error_message or "",
+            generated_password or ""
         ]
         
         # 最終行に追記
@@ -2886,12 +2887,13 @@ def _parse_hacomono_error(error: HacomonoAPIError) -> dict:
 
 def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone: str, 
                          guest_name_kana: str = "", guest_note: str = "",
-                         gender: int = 2, birthday: str = "2000-01-01", studio_id: int = 2,
+                         gender: int = 2, birthday: str = None, studio_id: int = 2,
                          ticket_id: int = 5):
     """ゲストメンバーを作成（または既存メンバーを使用）し、チケットを付与
     
     Args:
         gender: 性別（1: 男性, 2: 女性）デフォルト: 2（女性）
+        birthday: 生年月日（yyyy-MM-dd形式）。Noneの場合は送信しない
         ticket_id: 付与するチケットID（デフォルト: 5 = Web予約用チケット）
     
     Returns:
@@ -2948,10 +2950,13 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
             "tel": guest_phone,
             "plain_password": random_password,
             "gender": gender,
-            "birthday": birthday,
             "studio_id": studio_id,
             "note": f"Web予約ゲスト: {guest_note}"
         }
+        
+        # 生年月日が指定されている場合のみ追加
+        if birthday:
+            member_data["birthday"] = birthday
         
         # メンバーを作成
         member_response = client.create_member(member_data)
@@ -3067,6 +3072,8 @@ def create_reservation():
     
     # 2. ゲストメンバーを作成してチケットを付与
     try:
+        # 生年月日: リクエストから取得、なければ環境変数、なければNone（空白）
+        birthday_value = data.get("birthday") or MEMBER_DEFAULT_BIRTHDAY or None
         member_id, member_ticket_id, generated_password = _create_guest_member(
             client=client,
             guest_name=data["guest_name"],
@@ -3075,7 +3082,7 @@ def create_reservation():
             guest_name_kana=data.get("guest_name_kana", ""),
             guest_note=data.get("guest_note", ""),
             gender=data.get("gender", 2),  # デフォルト: 女性
-            birthday=data.get("birthday", "2000-01-01"),
+            birthday=birthday_value,
             studio_id=data.get("studio_id", 2),
             ticket_id=ticket_id_to_grant
         )
@@ -3396,7 +3403,8 @@ def create_reservation():
         studio_name=studio_name,
         reservation_date=reservation_date,
         reservation_time=reservation_time,
-        program_name=program_name
+        program_name=program_name,
+        generated_password=generated_password
     )
     
     # 店舗スタッフ向けメール通知（店舗のカスタム属性からメールアドレスを取得）
@@ -3708,6 +3716,9 @@ def create_choice_reservation():
         import string
         random_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12)) + "!A1"
         
+        # 生年月日: リクエストから取得、なければ環境変数、なければNone（空白）
+        birthday_value = data.get("birthday") or MEMBER_DEFAULT_BIRTHDAY or None
+        
         member_data = {
             "last_name": last_name,
             "first_name": first_name or last_name,
@@ -3717,10 +3728,13 @@ def create_choice_reservation():
             "tel": guest_phone,
             "plain_password": random_password,
             "gender": data.get("gender", 2),  # デフォルト: 女性
-            "birthday": data.get("birthday", "2000-01-01"),
             "studio_id": data.get("studio_id", 2),
             "note": f"Web予約ゲスト（自由枠）: {guest_note}"
         }
+        
+        # 生年月日が指定されている場合のみ追加
+        if birthday_value:
+            member_data["birthday"] = birthday_value
         
         try:
             logger.info(f"Creating member with data: {member_data}")
@@ -4230,7 +4244,8 @@ def create_choice_reservation():
         studio_name=studio_name,
         reservation_date=reservation_date,
         reservation_time=reservation_time,
-        program_name=program_name
+        program_name=program_name,
+        generated_password=generated_password
     )
     
     # 店舗スタッフ向けメール通知（店舗のカスタム属性からメールアドレスを取得）
