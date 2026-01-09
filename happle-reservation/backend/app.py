@@ -9,7 +9,7 @@ import json
 import logging
 import hashlib
 import hmac
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from email.mime.text import MIMEText
@@ -1655,8 +1655,9 @@ def append_reservation_to_spreadsheet(
         if worksheet is None:
             return
         
-        # 記録日時
-        recorded_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 記録日時（日本時刻 JST = UTC+9）
+        jst = timezone(timedelta(hours=9))
+        recorded_at = datetime.now(jst).strftime("%Y-%m-%d %H:%M:%S")
         
         # ステータス
         status_text = "予約成功" if status == "success" else "予約失敗"
