@@ -2914,8 +2914,12 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
         for member in members:
             if member.get("mail_address") == guest_email:
                 member_id = member.get("id")
-                logger.info(f"Found existing member: ID={member_id}, email={guest_email}")
-                break
+                # 既存会員が見つかった場合はエラーを返す
+                logger.info(f"Found existing member: ID={member_id}, email={guest_email} - rejecting reservation")
+                raise ValueError("このメールアドレスは既に登録されているため、予約できません。別のメールアドレスをご使用ください。")
+    except ValueError:
+        # ValueError は既存会員エラーなので再スロー
+        raise
     except Exception as e:
         logger.warning(f"Failed to search for existing member: {e}")
     
@@ -3087,11 +3091,20 @@ def create_reservation():
             studio_id=data.get("studio_id", 2),
             ticket_id=ticket_id_to_grant
         )
+    except ValueError as e:
+        # 既存会員エラー
+        logger.info(f"Existing member rejected: {e}")
+        return jsonify({
+            "success": False,
+            "error": "このメールアドレスは既に会員登録されています。",
+            "message": str(e),
+            "error_code": "EXISTING_MEMBER"
+        }), 400
     except HacomonoAPIError as e:
         error_info = _parse_hacomono_error(e)
         logger.error(f"Failed to create member: {e}")
         logger.error(f"Member creation API response body: {e.response_body}")
-        
+
         # Slack通知（エラー）
         send_slack_notification(
             status="error",
@@ -3699,18 +3712,32 @@ def create_choice_reservation():
         if isinstance(members_data, dict):
             members_list = members_data.get("list", [])
             if members_list and len(members_list) > 0:
+                # 既存会員が見つかった場合はエラーを返す
                 member_id = members_list[0].get("id")
-                logger.info(f"Found existing member ID: {member_id}")
+                logger.info(f"Found existing member ID: {member_id} - rejecting reservation")
+                return jsonify({
+                    "success": False,
+                    "error": "このメールアドレスは既に登録されています。",
+                    "message": "このメールアドレスは既に登録されているため、予約できません。別のメールアドレスをご使用ください。",
+                    "error_code": "EXISTING_MEMBER"
+                }), 400
             else:
                 logger.info(f"No existing member found for email: {guest_email}")
         elif isinstance(members_data, list) and len(members_data) > 0:
+            # 既存会員が見つかった場合はエラーを返す
             member_id = members_data[0].get("id")
-            logger.info(f"Found existing member ID: {member_id}")
+            logger.info(f"Found existing member ID: {member_id} - rejecting reservation")
+            return jsonify({
+                "success": False,
+                "error": "このメールアドレスは既に登録されています。",
+                "message": "このメールアドレスは既に登録されているため、予約できません。別のメールアドレスをご使用ください。",
+                "error_code": "EXISTING_MEMBER"
+            }), 400
     except HacomonoAPIError as e:
         logger.warning(f"Failed to search members: {e}")
     except Exception as e:
         logger.warning(f"Error parsing members response: {e}")
-    
+
     # 2. 既存メンバーがいなければ新規作成
     if not member_id:
         import secrets
