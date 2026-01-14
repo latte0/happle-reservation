@@ -2914,8 +2914,12 @@ def _create_guest_member(client, guest_name: str, guest_email: str, guest_phone:
         for member in members:
             if member.get("mail_address") == guest_email:
                 member_id = member.get("id")
-                logger.info(f"Found existing member: ID={member_id}, email={guest_email}")
-                break
+                # 既存会員が見つかった場合はエラーを返す
+                logger.info(f"Found existing member: ID={member_id}, email={guest_email} - rejecting reservation")
+                raise ValueError("このメールアドレスは既に登録されているため、予約できません。別のメールアドレスをご使用ください。")
+    except ValueError:
+        # ValueError は既存会員エラーなので再スロー
+        raise
     except Exception as e:
         logger.warning(f"Failed to search for existing member: {e}")
     
@@ -3087,11 +3091,20 @@ def create_reservation():
             studio_id=data.get("studio_id", 2),
             ticket_id=ticket_id_to_grant
         )
+    except ValueError as e:
+        # 既存会員エラー
+        logger.info(f"Existing member rejected: {e}")
+        return jsonify({
+            "success": False,
+            "error": "このメールアドレスは既に会員登録されています。",
+            "message": str(e),
+            "error_code": "EXISTING_MEMBER"
+        }), 400
     except HacomonoAPIError as e:
         error_info = _parse_hacomono_error(e)
         logger.error(f"Failed to create member: {e}")
         logger.error(f"Member creation API response body: {e.response_body}")
-        
+
         # Slack通知（エラー）
         send_slack_notification(
             status="error",
@@ -3699,19 +3712,267 @@ def create_choice_reservation():
         if isinstance(members_data, dict):
             members_list = members_data.get("list", [])
             if members_list and len(members_list) > 0:
+                # 既存会員が見つかった場合はエラーを返す
                 member_id = members_list[0].get("id")
-                logger.info(f"Found existing member ID: {member_id}")
+                logger.info(f"Found existing member ID: {member_id} - rejecting reservation")
+                return jsonify({
+                    "success": False,
+                    "error": "このメールアドレスは既に登録されています。",
+                    "message": "このメールアドレスは既に登録されているため、予約できません。別のメールアドレスをご使用ください。",
+                    "error_code": "EXISTING_MEMBER"
+                }), 400
             else:
                 logger.info(f"No existing member found for email: {guest_email}")
         elif isinstance(members_data, list) and len(members_data) > 0:
+            # 既存会員が見つかった場合はエラーを返す
             member_id = members_data[0].get("id")
-            logger.info(f"Found existing member ID: {member_id}")
+            logger.info(f"Found existing member ID: {member_id} - rejecting reservation")
+            return jsonify({
+                "success": False,
+                "error": "このメールアドレスは既に登録されています。",
+                "message": "このメールアドレスは既に登録されているため、予約できません。別のメールアドレスをご使用ください。",
+                "error_code": "EXISTING_MEMBER"
+            }), 400
     except HacomonoAPIError as e:
         logger.warning(f"Failed to search members: {e}")
     except Exception as e:
         logger.warning(f"Error parsing members response: {e}")
-    
-    # 2. 既存メンバーがいなければ新規作成
+
+    # 2. プログラム情報を取得してチケットIDを確認（メンバー作成前のバリデーション）
+    program_response = client.get_program(program_id)
+    program = program_response.get("data", {}).get("program", {})
+
+    # デバッグ: プログラムのすべてのチケット関連フィールドをログ出力
+    ticket_related_keys = [k for k in program.keys() if 'ticket' in k.lower()]
+    logger.info(f"Program {program_id} ALL ticket-related keys: {ticket_related_keys}")
+    for key in ticket_related_keys:
+        logger.info(f"  {key}: {program.get(key)}")
+
+    # チケット制限の確認（hacomonoの正式フィールド）
+    is_ticket_reserve_limit = program.get("is_ticket_reserve_limit", False)
+    ticket_reserve_limit_details = program.get("ticket_reserve_limit_details", [])
+
+    logger.info(f"Program {program_id} ticket restriction: is_ticket_reserve_limit={is_ticket_reserve_limit}, ticket_reserve_limit_details={ticket_reserve_limit_details}")
+
+    # チケットIDを決定
+    DEFAULT_TICKET_ID = 5  # Web予約用デフォルトチケット
+    ticket_id_to_grant = DEFAULT_TICKET_ID
+
+    # チケット制限がある場合、制限されたチケットIDを使用
+    if is_ticket_reserve_limit and ticket_reserve_limit_details:
+        # ticket_reserve_limit_details から ticket_id を抽出
+        for detail in ticket_reserve_limit_details:
+            tid = detail.get("ticket_id") or detail.get("id")
+            if tid:
+                ticket_id_to_grant = tid
+                logger.info(f"Using ticket from ticket_reserve_limit_details: {ticket_id_to_grant}")
+                break
+    else:
+        # 後方互換: 他のフィールドも確認
+        program_ticket_ids = (
+            program.get("consumable_ticket_ids") or
+            program.get("ticket_ids") or
+            program.get("reservable_ticket_ids") or
+            []
+        )
+        if program_ticket_ids and len(program_ticket_ids) > 0:
+            ticket_id_to_grant = program_ticket_ids[0]
+            logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
+        else:
+            logger.info(f"No program-linked ticket found, using default: {ticket_id_to_grant}")
+
+    # 3. 空いているスタッフを取得・検証（メンバー作成前のバリデーション）
+    instructor_ids = data.get("instructor_ids")
+    if not instructor_ids:
+        # 指定された日時の空いているスタッフを取得
+        try:
+            # start_atから日付を抽出
+            from zoneinfo import ZoneInfo
+            jst = ZoneInfo("Asia/Tokyo")
+            start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
+            date_str = start_datetime.strftime("%Y-%m-%d")
+            selectable_instructor_details = program.get("selectable_instructor_details", [])
+
+            # 選択可能スタッフIDを取得（None = 全スタッフ選択可能）
+            selectable_instructor_ids = None
+            if selectable_instructor_details:
+                first_detail = selectable_instructor_details[0]
+                detail_type = first_detail.get("type")
+                # ALL, RANDOM_ALL の場合は全スタッフ選択可能
+                # SELECTED, FIXED, RANDOM_SELECTED の場合は指定されたスタッフのみ
+                if detail_type in ["SELECTED", "FIXED", "RANDOM_SELECTED"]:
+                    items = first_detail.get("items", [])
+                    # items は { instructor_id, instructor_code, ... } の配列
+                    selectable_instructor_ids = set(item.get("instructor_id") for item in items if item.get("instructor_id"))
+                    logger.info(f"Program {program_id} has selectable instructors (type={detail_type}): {selectable_instructor_ids}")
+
+            # choice/scheduleから空いているスタッフを取得（30秒間キャッシュ）
+            schedule = get_cached_choice_schedule(client, studio_room_id, date_str)
+
+            # スタジオIDを取得（スタッフのスタジオ紐付けチェック用）
+            studio_room_service = schedule.get("studio_room_service", {})
+            studio_id = studio_room_service.get("studio_id")
+
+            # スタッフのスタジオ紐付け情報を取得
+            instructor_studio_map = get_cached_instructor_studio_map(client)
+
+            # 利用可能なスタッフを取得
+            shift_instructors = schedule.get("shift_instructor", [])
+            reserved_instructors = schedule.get("reservation_assign_instructor", [])
+
+            # 予定ブロック（休憩ブロック）を取得してスタッフの予約情報に統合
+            try:
+                shift_slots_response = client.get_shift_slots({"studio_id": studio_id, "date": date_str})
+                shift_slots_data = shift_slots_response.get("data", {}).get("shift_slots", {})
+                shift_slots = shift_slots_data.get("list", []) if isinstance(shift_slots_data, dict) else shift_slots_data
+
+                # 予定ブロックをスタッフと設備に分類
+                resource_blocks = []
+                for slot in shift_slots:
+                    entity_type = slot.get("entity_type", "").upper()
+                    if entity_type == "INSTRUCTOR":
+                        reserved_instructors.append({
+                            "entity_id": slot.get("entity_id"),
+                            "start_at": slot.get("start_at"),
+                            "end_at": slot.get("end_at"),
+                            "reservation_type": "SHIFT_SLOT"
+                        })
+                    elif entity_type == "RESOURCE":
+                        resource_blocks.append({
+                            "entity_id": slot.get("entity_id"),
+                            "start_at": slot.get("start_at"),
+                            "end_at": slot.get("end_at"),
+                            "reservation_type": "SHIFT_SLOT"
+                        })
+                logger.info(f"Fetched {len(shift_slots)} shift slots for reservation validation")
+            except Exception as e:
+                logger.warning(f"Failed to get shift slots for reservation validation: {e}")
+
+            # プログラムの所要時間とインターバルを取得
+            service_minutes = program.get("service_minutes", 30)
+            before_interval = program.get("before_interval_minutes") or 0
+            after_interval = program.get("after_interval_minutes") or 0
+
+            # 予約したい時間帯
+            proposed_end = start_datetime + timedelta(minutes=service_minutes)
+
+            # 予約済みのスタッフIDを取得（インターバルを考慮）
+            # 休憩ブロック（reservation_typeがBREAK、BLOCK、SHIFT_SLOTなど）も予約不可として扱う
+            reserved_instructor_ids = set()
+            for reserved in reserved_instructors:
+                try:
+                    reserved_start_str = reserved.get("start_at", "")
+                    reserved_end_str = reserved.get("end_at", "")
+                    if not reserved_start_str or not reserved_end_str:
+                        continue
+                    # ISO8601形式の日時をパース（タイムゾーン情報を処理してJSTに統一）
+                    reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
+                    reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
+
+                    # 休憩ブロック（SHIFT_SLOT含む）の場合はインターバルを考慮せず、そのままブロック
+                    reservation_type = reserved.get("reservation_type", "").upper()
+                    is_block = reservation_type in ["BREAK", "BLOCK", "REST", "SHIFT_SLOT", "休憩", "ブロック"]
+
+                    if is_block:
+                        # 休憩ブロックの場合は、その時間帯をそのままブロック
+                        block_start = reserved_start
+                        block_end = reserved_end
+                    else:
+                        # 既存予約のブロック範囲（インターバル含む）
+                        # before_interval: 予約開始前のブロック時間
+                        # after_interval: 予約終了後のブロック時間
+                        block_start = reserved_start - timedelta(minutes=before_interval)
+                        block_end = reserved_end + timedelta(minutes=after_interval)
+
+                    # 予約したい時間帯がブロック範囲と重複するかチェック
+                    if start_datetime < block_end and proposed_end > block_start:
+                        reserved_instructor_ids.add(reserved.get("entity_id"))
+                except Exception as e:
+                    logger.warning(f"Failed to parse reserved instructor time: {e}")
+                    continue
+
+            # 空いているスタッフを抽出（スタジオ紐付け & プログラム選択可能スタッフもチェック）
+            available_instructors = []
+            for instructor in shift_instructors:
+                instructor_id = instructor.get("instructor_id")
+                try:
+                    # プログラムの選択可能スタッフにいるかチェック
+                    if selectable_instructor_ids is not None and instructor_id not in selectable_instructor_ids:
+                        logger.debug(f"Instructor {instructor_id} not in program's selectable instructors, skipping")
+                        continue
+
+                    # スタッフがスタジオに紐付けられているかチェック
+                    # hacomonoのロジック: studio_idsが空 = 全店舗対応可能
+                    instructor_studio_ids = instructor_studio_map.get(instructor_id, [])
+                    if instructor_studio_ids and studio_id and studio_id not in instructor_studio_ids:
+                        # 特定のスタジオに紐付けられているが、このスタジオではない
+                        logger.debug(f"Instructor {instructor_id} not associated with studio {studio_id}, skipping")
+                        continue
+                    # 空配列の場合は制限なし（全店舗OK）なのでスキップしない
+
+                    instructor_start_str = instructor.get("start_at", "")
+                    instructor_end_str = instructor.get("end_at", "")
+                    if not instructor_start_str or not instructor_end_str:
+                        continue
+                    # JSTに統一して比較
+                    instructor_start = datetime.fromisoformat(instructor_start_str.replace("Z", "+00:00")).astimezone(jst)
+                    instructor_end = datetime.fromisoformat(instructor_end_str.replace("Z", "+00:00")).astimezone(jst)
+
+                    # シフト時間内にコースが収まり、予約が入っていないスタッフ
+                    if (instructor_start <= start_datetime and proposed_end <= instructor_end and
+                        instructor_id not in reserved_instructor_ids):
+                        available_instructors.append(instructor_id)
+                except Exception as e:
+                    logger.warning(f"Failed to parse instructor time: {e}")
+                    continue
+
+            if available_instructors:
+                instructor_ids = available_instructors[:1]  # 最初の1名を使用
+                logger.info(f"Found available instructors: {available_instructors}, using: {instructor_ids}")
+            else:
+                # 空いているスタッフが見つからない場合はエラー
+                logger.error(f"No available instructors found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
+
+                # Slack通知（エラー）
+                send_slack_notification(
+                    status="error",
+                    guest_name=guest_name,
+                    guest_email=guest_email,
+                    guest_phone=guest_phone,
+                    studio_name="",
+                    error_message="この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
+                    error_code="NO_AVAILABLE_INSTRUCTOR"
+                )
+
+                return jsonify({
+                    "error": "予約の作成に失敗しました",
+                    "message": "この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
+                    "error_code": "NO_AVAILABLE_INSTRUCTOR"
+                }), 400
+
+            # 設備の割り当てはhacomonoが自動で行うため、ここでのチェックは不要
+            # terms（時間帯設定）がある場合も、hacomonoが適切に処理する
+        except Exception as e:
+            logger.warning(f"Failed to get available instructors: {e}")
+
+            # Slack通知（エラー）
+            send_slack_notification(
+                status="error",
+                guest_name=guest_name,
+                guest_email=guest_email,
+                guest_phone=guest_phone,
+                studio_name="",
+                error_message="スタッフ情報の取得に失敗しました。",
+                error_code="INSTRUCTOR_FETCH_ERROR"
+            )
+
+            return jsonify({
+                "error": "予約の作成に失敗しました",
+                "message": "スタッフ情報の取得に失敗しました。",
+                "error_code": "INSTRUCTOR_FETCH_ERROR"
+            }), 400
+
+    # 4. すべてのバリデーション成功後、既存メンバーがいなければ新規作成
     if not member_id:
         import secrets
         import string
@@ -3779,248 +4040,15 @@ def create_choice_reservation():
     
     if not member_id:
         return jsonify({"error": "Failed to create guest member"}), 400
-    
-    # 2. プログラム情報を取得してチケットIDを確認
-    program_response = client.get_program(program_id)
-    program = program_response.get("data", {}).get("program", {})
-    
-    # デバッグ: プログラムのすべてのチケット関連フィールドをログ出力
-    ticket_related_keys = [k for k in program.keys() if 'ticket' in k.lower()]
-    logger.info(f"Program {program_id} ALL ticket-related keys: {ticket_related_keys}")
-    for key in ticket_related_keys:
-        logger.info(f"  {key}: {program.get(key)}")
-    
-    # チケット制限の確認（hacomonoの正式フィールド）
-    is_ticket_reserve_limit = program.get("is_ticket_reserve_limit", False)
-    ticket_reserve_limit_details = program.get("ticket_reserve_limit_details", [])
-    
-    logger.info(f"Program {program_id} ticket restriction: is_ticket_reserve_limit={is_ticket_reserve_limit}, ticket_reserve_limit_details={ticket_reserve_limit_details}")
-    
-    # チケットIDを決定
-    DEFAULT_TICKET_ID = 5  # Web予約用デフォルトチケット
-    ticket_id_to_grant = DEFAULT_TICKET_ID
-    
-    # チケット制限がある場合、制限されたチケットIDを使用
-    if is_ticket_reserve_limit and ticket_reserve_limit_details:
-        # ticket_reserve_limit_details から ticket_id を抽出
-        for detail in ticket_reserve_limit_details:
-            tid = detail.get("ticket_id") or detail.get("id")
-            if tid:
-                ticket_id_to_grant = tid
-                logger.info(f"Using ticket from ticket_reserve_limit_details: {ticket_id_to_grant}")
-                break
-    else:
-        # 後方互換: 他のフィールドも確認
-        program_ticket_ids = (
-            program.get("consumable_ticket_ids") or 
-            program.get("ticket_ids") or 
-            program.get("reservable_ticket_ids") or
-            []
-        )
-        if program_ticket_ids and len(program_ticket_ids) > 0:
-            ticket_id_to_grant = program_ticket_ids[0]
-            logger.info(f"Using program-linked ticket ID: {ticket_id_to_grant}")
-        else:
-            logger.info(f"No program-linked ticket found, using default: {ticket_id_to_grant}")
-    
-    # 3. メンバーにチケットを付与
+
+    # 5. メンバーにチケットを付与
     try:
         ticket_response = client.grant_ticket_to_member(member_id, ticket_id=ticket_id_to_grant, num=1)
         logger.info(f"Granted ticket {ticket_id_to_grant}, member_ticket_id: {ticket_response.get('data', {}).get('member_ticket', {}).get('id')}")
     except HacomonoAPIError as e:
         logger.warning(f"Failed to grant ticket {ticket_id_to_grant}: {e}")
-    
-    # 4. 空いているスタッフを取得（指定されていない場合）
-    instructor_ids = data.get("instructor_ids")
-    if not instructor_ids:
-        # 指定された日時の空いているスタッフを取得
-        try:
-            # start_atから日付を抽出（JSTタイムゾーンを付与）
-            from zoneinfo import ZoneInfo
-            jst = ZoneInfo("Asia/Tokyo")
-            start_datetime = datetime.strptime(start_at, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=jst)
-            date_str = start_datetime.strftime("%Y-%m-%d")
-            selectable_instructor_details = program.get("selectable_instructor_details", [])
-            
-            # 選択可能スタッフIDを取得（None = 全スタッフ選択可能）
-            selectable_instructor_ids = None
-            if selectable_instructor_details:
-                first_detail = selectable_instructor_details[0]
-                detail_type = first_detail.get("type")
-                # ALL, RANDOM_ALL の場合は全スタッフ選択可能
-                # SELECTED, FIXED, RANDOM_SELECTED の場合は指定されたスタッフのみ
-                if detail_type in ["SELECTED", "FIXED", "RANDOM_SELECTED"]:
-                    items = first_detail.get("items", [])
-                    # items は { instructor_id, instructor_code, ... } の配列
-                    selectable_instructor_ids = set(item.get("instructor_id") for item in items if item.get("instructor_id"))
-                    logger.info(f"Program {program_id} has selectable instructors (type={detail_type}): {selectable_instructor_ids}")
-            
-            # choice/scheduleから空いているスタッフを取得（30秒間キャッシュ）
-            schedule = get_cached_choice_schedule(client, studio_room_id, date_str)
-            
-            # スタジオIDを取得（スタッフのスタジオ紐付けチェック用）
-            studio_room_service = schedule.get("studio_room_service", {})
-            studio_id = studio_room_service.get("studio_id")
-            
-            # スタッフのスタジオ紐付け情報を取得
-            instructor_studio_map = get_cached_instructor_studio_map(client)
-            
-            # 利用可能なスタッフを取得
-            shift_instructors = schedule.get("shift_instructor", [])
-            reserved_instructors = schedule.get("reservation_assign_instructor", [])
-            
-            # 予定ブロック（休憩ブロック）を取得してスタッフの予約情報に統合
-            try:
-                shift_slots_response = client.get_shift_slots({"studio_id": studio_id, "date": date_str})
-                shift_slots_data = shift_slots_response.get("data", {}).get("shift_slots", {})
-                shift_slots = shift_slots_data.get("list", []) if isinstance(shift_slots_data, dict) else shift_slots_data
-                
-                # 予定ブロックをスタッフと設備に分類
-                resource_blocks = []
-                for slot in shift_slots:
-                    entity_type = slot.get("entity_type", "").upper()
-                    if entity_type == "INSTRUCTOR":
-                        reserved_instructors.append({
-                            "entity_id": slot.get("entity_id"),
-                            "start_at": slot.get("start_at"),
-                            "end_at": slot.get("end_at"),
-                            "reservation_type": "SHIFT_SLOT"
-                        })
-                    elif entity_type == "RESOURCE":
-                        resource_blocks.append({
-                            "entity_id": slot.get("entity_id"),
-                            "start_at": slot.get("start_at"),
-                            "end_at": slot.get("end_at"),
-                            "reservation_type": "SHIFT_SLOT"
-                        })
-                logger.info(f"Fetched {len(shift_slots)} shift slots for reservation validation")
-            except Exception as e:
-                logger.warning(f"Failed to get shift slots for reservation validation: {e}")
-            
-            # プログラムの所要時間とインターバルを取得
-            service_minutes = program.get("service_minutes", 30)
-            before_interval = program.get("before_interval_minutes") or 0
-            after_interval = program.get("after_interval_minutes") or 0
-            
-            # 予約したい時間帯
-            proposed_end = start_datetime + timedelta(minutes=service_minutes)
-            
-            # 予約済みのスタッフIDを取得（インターバルを考慮）
-            # 休憩ブロック（reservation_typeがBREAK、BLOCK、SHIFT_SLOTなど）も予約不可として扱う
-            reserved_instructor_ids = set()
-            for reserved in reserved_instructors:
-                try:
-                    reserved_start_str = reserved.get("start_at", "")
-                    reserved_end_str = reserved.get("end_at", "")
-                    if not reserved_start_str or not reserved_end_str:
-                        continue
-                    # ISO8601形式の日時をパース（タイムゾーン情報を処理してJSTに統一）
-                    reserved_start = datetime.fromisoformat(reserved_start_str.replace("Z", "+00:00")).astimezone(jst)
-                    reserved_end = datetime.fromisoformat(reserved_end_str.replace("Z", "+00:00")).astimezone(jst)
-                    
-                    # 休憩ブロック（SHIFT_SLOT含む）の場合はインターバルを考慮せず、そのままブロック
-                    reservation_type = reserved.get("reservation_type", "").upper()
-                    is_block = reservation_type in ["BREAK", "BLOCK", "REST", "SHIFT_SLOT", "休憩", "ブロック"]
-                    
-                    if is_block:
-                        # 休憩ブロックの場合は、その時間帯をそのままブロック
-                        block_start = reserved_start
-                        block_end = reserved_end
-                    else:
-                        # 既存予約のブロック範囲（インターバル含む）
-                        # before_interval: 予約開始前のブロック時間
-                        # after_interval: 予約終了後のブロック時間
-                        block_start = reserved_start - timedelta(minutes=before_interval)
-                        block_end = reserved_end + timedelta(minutes=after_interval)
-                    
-                    # 予約したい時間帯がブロック範囲と重複するかチェック
-                    if start_datetime < block_end and proposed_end > block_start:
-                        reserved_instructor_ids.add(reserved.get("entity_id"))
-                except Exception as e:
-                    logger.warning(f"Failed to parse reserved instructor time: {e}")
-                    continue
-            
-            # 空いているスタッフを抽出（スタジオ紐付け & プログラム選択可能スタッフもチェック）
-            available_instructors = []
-            for instructor in shift_instructors:
-                instructor_id = instructor.get("instructor_id")
-                try:
-                    # プログラムの選択可能スタッフにいるかチェック
-                    if selectable_instructor_ids is not None and instructor_id not in selectable_instructor_ids:
-                        logger.debug(f"Instructor {instructor_id} not in program's selectable instructors, skipping")
-                        continue
-                    
-                    # スタッフがスタジオに紐付けられているかチェック
-                    # hacomonoのロジック: studio_idsが空 = 全店舗対応可能
-                    instructor_studio_ids = instructor_studio_map.get(instructor_id, [])
-                    if instructor_studio_ids and studio_id and studio_id not in instructor_studio_ids:
-                        # 特定のスタジオに紐付けられているが、このスタジオではない
-                        logger.debug(f"Instructor {instructor_id} not associated with studio {studio_id}, skipping")
-                        continue
-                    # 空配列の場合は制限なし（全店舗OK）なのでスキップしない
-                    
-                    instructor_start_str = instructor.get("start_at", "")
-                    instructor_end_str = instructor.get("end_at", "")
-                    if not instructor_start_str or not instructor_end_str:
-                        continue
-                    # JSTに統一して比較
-                    instructor_start = datetime.fromisoformat(instructor_start_str.replace("Z", "+00:00")).astimezone(jst)
-                    instructor_end = datetime.fromisoformat(instructor_end_str.replace("Z", "+00:00")).astimezone(jst)
-                
-                    # シフト時間内にコースが収まり、予約が入っていないスタッフ
-                    if (instructor_start <= start_datetime and proposed_end <= instructor_end and 
-                        instructor_id not in reserved_instructor_ids):
-                        available_instructors.append(instructor_id)
-                except Exception as e:
-                    logger.warning(f"Failed to parse instructor time: {e}")
-                    continue
-            
-            if available_instructors:
-                instructor_ids = available_instructors[:1]  # 最初の1名を使用
-                logger.info(f"Found available instructors: {available_instructors}, using: {instructor_ids}")
-            else:
-                # 空いているスタッフが見つからない場合はエラー
-                logger.error(f"No available instructors found for studio_room_id={studio_room_id}, date={date_str}, time={start_at}")
-                
-                # Slack通知（エラー）
-                send_slack_notification(
-                    status="error",
-                    guest_name=guest_name,
-                    guest_email=guest_email,
-                    guest_phone=guest_phone,
-                    studio_name="",
-                    error_message="この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
-                    error_code="NO_AVAILABLE_INSTRUCTOR"
-                )
-                
-                return jsonify({
-                    "error": "予約の作成に失敗しました",
-                    "message": "この時間帯に対応可能なスタッフがいません。別の時間帯をお選びください。",
-                    "error_code": "NO_AVAILABLE_INSTRUCTOR"
-                }), 400
-            
-            # 設備の割り当てはhacomonoが自動で行うため、ここでのチェックは不要
-            # terms（時間帯設定）がある場合も、hacomonoが適切に処理する
-        except Exception as e:
-            logger.warning(f"Failed to get available instructors: {e}")
-            
-            # Slack通知（エラー）
-            send_slack_notification(
-                status="error",
-                guest_name=guest_name,
-                guest_email=guest_email,
-                guest_phone=guest_phone,
-                studio_name="",
-                error_message="スタッフ情報の取得に失敗しました。",
-                error_code="INSTRUCTOR_FETCH_ERROR"
-            )
-            
-            return jsonify({
-                "error": "予約の作成に失敗しました",
-                "message": "スタッフ情報の取得に失敗しました。",
-                "error_code": "INSTRUCTOR_FETCH_ERROR"
-            }), 400
-    
+
+    # 6. 予約データを作成
     reservation_data = {
         "member_id": member_id,
         "studio_room_id": studio_room_id,
