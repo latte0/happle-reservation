@@ -4390,13 +4390,17 @@ def cancel_reservation(reservation_id: int):
             except:
                 pass
         
-        # レッスン情報から店舗・プログラム情報を取得
+        # 店舗・プログラム情報を取得
         studio_lesson_id = reservation_data.get("studio_lesson_id")
+        studio_room_id = reservation_data.get("studio_room_id")
+        program_id = reservation_data.get("program_id")
+
         if studio_lesson_id:
+            # 固定枠予約の場合: レッスン情報から取得
             try:
                 lesson_response = client.get_studio_lesson(studio_lesson_id)
                 lesson_data = lesson_response.get("data", {}).get("studio_lesson", {})
-                
+
                 # 店舗情報
                 lesson_studio_id = lesson_data.get("studio_id")
                 if lesson_studio_id:
@@ -4404,15 +4408,38 @@ def cancel_reservation(reservation_id: int):
                     studio_response = client.get_studio(studio_id)
                     studio_data = studio_response.get("data", {}).get("studio", {})
                     studio_name = studio_data.get("name", "")
-                
+
                 # プログラム情報
-                program_id = lesson_data.get("program_id")
-                if program_id:
-                    program_response = client.get_program(program_id)
+                lesson_program_id = lesson_data.get("program_id")
+                if lesson_program_id:
+                    program_response = client.get_program(lesson_program_id)
                     program_data = program_response.get("data", {}).get("program", {})
                     program_name = program_data.get("name", "")
             except Exception as e:
                 logger.warning(f"Failed to get lesson info for cancel notification: {e}")
+
+        elif studio_room_id:
+            # 自由枠予約の場合: スタジオルームから店舗IDを取得
+            try:
+                room_response = client.get_studio_room(studio_room_id)
+                room_data = room_response.get("data", {}).get("studio_room", {})
+                room_studio_id = room_data.get("studio_id")
+
+                if room_studio_id:
+                    studio_id = room_studio_id
+                    studio_response = client.get_studio(studio_id)
+                    studio_data = studio_response.get("data", {}).get("studio", {})
+                    studio_name = studio_data.get("name", "")
+                    logger.info(f"Got studio info from studio_room for choice reservation: studio_id={studio_id}, name={studio_name}")
+
+                # プログラム情報（自由枠予約は予約データに直接program_idがある）
+                if program_id:
+                    program_response = client.get_program(program_id)
+                    program_data = program_response.get("data", {}).get("program", {})
+                    program_name = program_data.get("name", "")
+                    logger.info(f"Got program info for choice reservation: program_id={program_id}, name={program_name}")
+            except Exception as e:
+                logger.warning(f"Failed to get studio_room info for cancel notification: {e}")
     except Exception as e:
         logger.warning(f"Failed to get reservation info for cancel notification: {e}")
     
