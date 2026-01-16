@@ -1372,7 +1372,7 @@ def send_reservation_email_mock(*args, **kwargs):
 # ==================== Slack通知 ====================
 
 def send_slack_notification(
-    status: str,  # "success" or "error"
+    status: str,  # "success", "error", or "cancel"
     reservation_id: int = None,
     guest_name: str = "",
     guest_email: str = "",
@@ -1386,9 +1386,9 @@ def send_slack_notification(
     error_code: str = ""
 ):
     """Slackに予約通知を送信
-    
+
     Args:
-        status: "success" または "error"
+        status: "success", "error", または "cancel"
         reservation_id: 予約ID
         guest_name: ゲスト名
         guest_email: メールアドレス
@@ -1401,19 +1401,59 @@ def send_slack_notification(
         error_code: エラーコード（エラー時）
     """
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
-    
+
     logger.info(f"Slack notification called: status={status}, reservation_id={reservation_id}, guest_name={guest_name}")
-    
+
     if not webhook_url:
         logger.warning("SLACK_WEBHOOK_URL is not set, skipping Slack notification")
         return
-    
+
     logger.info(f"SLACK_WEBHOOK_URL is set, sending notification to Slack")
-    
+
     try:
         if status == "success":
             color = "good"  # 緑色
             title = "✅ 予約成功"
+            fields = [
+                {
+                    "title": "予約ID",
+                    "value": str(reservation_id) if reservation_id else "N/A",
+                    "short": True
+                },
+                {
+                    "title": "お客様名",
+                    "value": guest_name or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "メールアドレス",
+                    "value": guest_email or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "電話番号",
+                    "value": guest_phone or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "店舗名",
+                    "value": studio_name or "N/A",
+                    "short": True
+                },
+                {
+                    "title": "予約日時",
+                    "value": f"{reservation_date} {reservation_time}" if reservation_date and reservation_time else "N/A",
+                    "short": True
+                },
+                {
+                    "title": "施術コース",
+                    "value": program_name or "N/A",
+                    "short": False
+                }
+            ]
+        elif status == "cancel":
+            color = "warning"  # オレンジ色
+            title = "⚠️ 予約キャンセル"
             fields = [
                 {
                     "title": "予約ID",
@@ -1486,10 +1526,12 @@ def send_slack_notification(
                     "short": True
                 }
             ]
-        
+
         # フォールバック用のテキストサマリーを生成
         if status == "success":
             text_summary = f"✅ 予約成功 - 予約ID: {reservation_id}, お客様: {guest_name}, 店舗: {studio_name}, 日時: {reservation_date} {reservation_time}"
+        elif status == "cancel":
+            text_summary = f"⚠️ 予約キャンセル - 予約ID: {reservation_id}, お客様: {guest_name}, 店舗: {studio_name}, 日時: {reservation_date} {reservation_time}"
         else:
             text_summary = f"❌ 予約失敗 - エラーコード: {error_code}, エラー: {error_message}, お客様: {guest_name}"
         
@@ -4463,7 +4505,23 @@ def cancel_reservation(reservation_id: int):
             )
         except Exception as e:
             logger.warning(f"Failed to send cancel notification email: {e}")
-    
+
+    # Slack通知（キャンセル）
+    try:
+        send_slack_notification(
+            status="cancel",
+            reservation_id=reservation_id,
+            guest_name=guest_name,
+            guest_email=guest_email,
+            guest_phone=guest_phone,
+            studio_name=studio_name,
+            reservation_date=reservation_date,
+            reservation_time=reservation_time,
+            program_name=program_name
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send Slack notification for cancellation: {e}")
+
     return jsonify({
         "success": True,
         "message": "予約がキャンセルされました"
