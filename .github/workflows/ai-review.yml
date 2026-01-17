@@ -160,6 +160,8 @@ jobs:
           echo "Final prompt size: $(wc -c < prompt.txt) bytes"
 
           # Claude APIを呼び出し（タイムアウトとリトライ付き）
+          # APIキー露出防止のため、curl実行前に再度デバッグモードをオフ
+          set +x
           HTTP_CODE=$(curl -s -w "%{http_code}" -o response.json \
             --max-time 60 \
             --retry 3 \
