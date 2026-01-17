@@ -53,19 +53,32 @@ jobs:
           DIFF_OUTPUT=""
           COUNT=0
           MAX_FILES=20
+          MAX_TOTAL_SIZE=100000  # 約10万文字（トークン制限対策）
+          TOTAL_SIZE=0
 
           while IFS= read -r file && [ $COUNT -lt $MAX_FILES ]; do
             if [ -f "$file" ]; then
-              echo "Processing: $file"
-              DIFF_OUTPUT="${DIFF_OUTPUT}## File: $file"$'\n'
-              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`diff"$'\n'
               # git diff の引数をクォートで保護
               DIFF_CONTENT=$(git diff "origin/${{ github.base_ref }}...HEAD" -- "$file")
+              DIFF_SIZE=${#DIFF_CONTENT}
+
+              # サイズ制限チェック
+              if [ $((TOTAL_SIZE + DIFF_SIZE)) -gt $MAX_TOTAL_SIZE ]; then
+                echo "::warning::Reached size limit ($TOTAL_SIZE bytes). Skipping remaining files."
+                break
+              fi
+
+              echo "Processing: $file (size: $DIFF_SIZE bytes)"
+              DIFF_OUTPUT="${DIFF_OUTPUT}## File: $file"$'\n'
+              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`diff"$'\n'
               DIFF_OUTPUT="${DIFF_OUTPUT}${DIFF_CONTENT}"$'\n'
               DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`"$'\n'
               COUNT=$((COUNT + 1))
+              TOTAL_SIZE=$((TOTAL_SIZE + DIFF_SIZE))
             fi
           done < filtered_files.txt
+
+          echo "Total diff size: $TOTAL_SIZE bytes across $COUNT files"
 
           # 結果を一時ファイルに保存
           echo -e "$DIFF_OUTPUT" > diffs.txt
@@ -119,6 +132,19 @@ jobs:
 
           cat diffs.txt >> prompt.txt
 
+          # プロンプトサイズチェック
+          PROMPT_SIZE=$(wc -c < prompt.txt)
+          MAX_PROMPT_SIZE=180000  # 約180KB (安全マージン考慮)
+
+          if [ "$PROMPT_SIZE" -gt "$MAX_PROMPT_SIZE" ]; then
+            echo "::warning::Prompt size ($PROMPT_SIZE bytes) exceeds limit. Truncating..."
+            head -c $MAX_PROMPT_SIZE prompt.txt > prompt_truncated.txt
+            mv prompt_truncated.txt prompt.txt
+            echo -e "\n\n[... コンテンツが切り詰められました ...]" >> prompt.txt
+          fi
+
+          echo "Final prompt size: $(wc -c < prompt.txt) bytes"
+
           # Claude APIを呼び出し
           RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
@@ -138,8 +164,16 @@ jobs:
           EOFCURL
           )
 
-          # レスポンスからレビュー内容を抽出
-          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "❌ レビュー生成エラー"')
+          # レスポンスからレビュー内容を抽出（エラーハンドリング強化）
+          if ! REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text' 2>/dev/null); then
+            echo "::error::Failed to parse Claude API response"
+            REVIEW="❌ レビュー結果の解析に失敗しました。"
+          fi
+
+          # 空レスポンスのチェック
+          if [ -z "$REVIEW" ] || [ "$REVIEW" = "null" ]; then
+            REVIEW="❌ レビュー生成エラー: 空のレスポンス"
+          fi
 
           # エラーチェック（エラーメッセージをサニタイズ）
           if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
