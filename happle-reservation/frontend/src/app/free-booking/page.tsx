@@ -173,6 +173,7 @@ function FreeBookingContent() {
 
   // 修正する（入力画面へ戻る）
   const handleEdit = () => {
+    setError(null) // エラーメッセージをクリア
     setIsConfirming(false)
     window.scrollTo(0, 0)
   }
