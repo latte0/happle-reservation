@@ -91,6 +91,14 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          set +x  # デバッグモードを明示的にオフ
+
+          # APIキー存在チェック
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set"
+            exit 1
+          fi
+
           # レビュープロンプト作成
           cat > prompt.txt << 'EOF'
           あなたは経験豊富なコードレビュアーです。以下のコード変更をレビューしてください。
@@ -145,8 +153,12 @@ jobs:
 
           echo "Final prompt size: $(wc -c < prompt.txt) bytes"
 
-          # Claude APIを呼び出し
-          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+          # Claude APIを呼び出し（タイムアウトとリトライ付き）
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o response.json \
+            --max-time 60 \
+            --retry 3 \
+            --retry-delay 5 \
+            https://api.anthropic.com/v1/messages \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
             -H "anthropic-version: 2023-06-01" \
             -H "content-type: application/json" \
@@ -163,6 +175,25 @@ jobs:
           }
           EOFCURL
           )
+
+          # HTTPステータスコードチェック
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "::error::Claude API returned status code: $HTTP_CODE"
+            if [ "$HTTP_CODE" -eq 429 ]; then
+              echo "::warning::Rate limit exceeded. Please try again later."
+            elif [ "$HTTP_CODE" -eq 401 ]; then
+              echo "::error::Authentication failed. Please check ANTHROPIC_API_KEY."
+            elif [ "$HTTP_CODE" -eq 000 ]; then
+              echo "::error::Network error or timeout occurred."
+            fi
+            REVIEW="❌ Claude APIエラー (HTTP $HTTP_CODE): ワークフローログを確認してください。"
+            echo "review<<DELIMITER_ERROR" >> $GITHUB_OUTPUT
+            echo "$REVIEW" >> $GITHUB_OUTPUT
+            echo "DELIMITER_ERROR" >> $GITHUB_OUTPUT
+            exit 0  # PRコメントは投稿するがワークフローは失敗させない
+          fi
+
+          RESPONSE=$(cat response.json)
 
           # レスポンスからレビュー内容を抽出（エラーハンドリング強化）
           if ! REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text' 2>/dev/null); then
