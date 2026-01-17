@@ -1,0 +1,184 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'happle-reservation/frontend/**'
+      - 'happle-reservation/backend/**'
+      - 'happle-reservation/scripts/**'
+      - 'terraform/**'
+      - '.github/workflows/**'
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          # PR内の変更ファイルリストを取得
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
+
+          # レビュー対象ファイルのみフィルタ
+          grep -E '^(happle-reservation/(frontend|backend|scripts)/|terraform/|\.github/workflows/)' changed_files.txt > filtered_files.txt || true
+
+          # ファイル数確認
+          FILE_COUNT=$(wc -l < filtered_files.txt)
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "No relevant files changed"
+            exit 0
+          fi
+
+          echo "Changed files:"
+          cat filtered_files.txt
+
+      - name: Get file diffs
+        id: get-diffs
+        if: steps.changed-files.outputs.file_count > 0
+        run: |
+          # 各ファイルのdiffを取得（最大20ファイル、トークン制限対策）
+          DIFF_OUTPUT=""
+          COUNT=0
+          MAX_FILES=20
+
+          while IFS= read -r file && [ $COUNT -lt $MAX_FILES ]; do
+            if [ -f "$file" ]; then
+              echo "Processing: $file"
+              DIFF_OUTPUT="${DIFF_OUTPUT}\n\n## File: $file\n"
+              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`diff\n"
+              DIFF_OUTPUT="${DIFF_OUTPUT}$(git diff origin/${{ github.base_ref }}...HEAD -- "$file")\n"
+              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`\n"
+              COUNT=$((COUNT + 1))
+            fi
+          done < filtered_files.txt
+
+          # 結果を一時ファイルに保存
+          echo -e "$DIFF_OUTPUT" > diffs.txt
+
+          echo "Collected diffs for $COUNT files"
+
+      - name: Review with Claude
+        id: claude-review
+        if: steps.changed-files.outputs.file_count > 0
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # レビュープロンプト作成
+          cat > prompt.txt << 'EOF'
+          あなたは経験豊富なコードレビュアーです。以下のコード変更をレビューしてください。
+
+          ## レビュー観点
+          1. **バグ**: 潜在的なバグ、エッジケース、エラーハンドリングの問題
+          2. **セキュリティ**: SQLインジェクション、XSS、認証/認可の問題、機密情報の漏洩全てのセキュリティ項目について
+          3. **パフォーマンス**: 非効率なループ、不要なAPI呼び出し、メモリリーク
+          4. **コード品質**: 可読性、保守性、ベストプラクティス違反
+
+          ## 出力形式
+          Markdown形式で以下の構造で出力してください:
+
+          ## 📊 レビューサマリー
+          - レビューしたファイル数
+          - 見つかった問題の総数と重要度別の内訳
+
+          ## 🔴 Critical Issues (致命的な問題)
+          致命的な問題がある場合のみこのセクションを表示。各問題について:
+          - **ファイル名:行番号**
+          - 問題の説明
+          - 修正案
+
+          ## ⚠️ Warnings (警告)
+          警告レベルの問題がある場合のみこのセクションを表示。
+
+          ## ✅ 良い点
+          良い実装があれば簡潔に言及
+
+          ## 💡 提案
+          全体的な改善提案があれば記載
+
+          問題がない場合は「✅ 問題は見つかりませんでした」とだけ記載してください。
+
+          ---
+
+          ## コード変更:
+          EOF
+
+          cat diffs.txt >> prompt.txt
+
+          # Claude APIを呼び出し
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d @- << EOFCURL
+          {
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 4096,
+            "messages": [
+              {
+                "role": "user",
+                "content": $(jq -Rs . < prompt.txt)
+              }
+            ]
+          }
+          EOFCURL
+          )
+
+          # レスポンスからレビュー内容を抽出
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "❌ レビュー生成エラー"')
+
+          # GitHubの複数行出力フォーマットに対応
+          echo "review<<EOF" >> $GITHUB_OUTPUT
+          echo "$REVIEW" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post review comment
+        if: steps.changed-files.outputs.file_count > 0
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const review = `${{ steps.claude-review.outputs.review }}`;
+            const body = `## 🤖 AI Code Review by Claude\n\n${review}\n\n---\n*Powered by Claude 3.5 Sonnet*`;
+
+            // 既存のボットコメントを検索
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('🤖 AI Code Review by Claude')
+            );
+
+            if (botComment) {
+              // 既存コメントを更新
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              // 新規コメント投稿
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
