@@ -185,9 +185,10 @@ jobs:
           fi
 
           # GitHubの複数行出力フォーマットに対応
-          echo "review<<EOF" >> $GITHUB_OUTPUT
+          DELIMITER="REVIEW_CONTENT_$(date +%s)"
+          echo "review<<${DELIMITER}" >> $GITHUB_OUTPUT
           echo "$REVIEW" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
 
       - name: Post review comment
         if: steps.changed-files.outputs.file_count > 0
