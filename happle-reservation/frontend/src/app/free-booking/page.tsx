@@ -166,6 +166,7 @@ function FreeBookingContent() {
   const handleConfirm = (e: React.FormEvent) => {
     e.preventDefault()
     if (validateForm()) {
+      setError(null) // エラーメッセージをクリア
       setIsConfirming(true)
       window.scrollTo(0, 0)
     }
