@@ -1,0 +1,282 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'happle-reservation/frontend/**'
+      - 'happle-reservation/backend/**'
+      - 'happle-reservation/scripts/**'
+      - 'terraform/**'
+      - '.github/workflows/**'
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          # PR内の変更ファイルリストを取得
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
+
+          # レビュー対象ファイルのみフィルタ
+          grep -E '^(happle-reservation/(frontend|backend|scripts)/|terraform/|\.github/workflows/)' changed_files.txt > filtered_files.txt || true
+
+          # ファイル数確認
+          FILE_COUNT=$(wc -l < filtered_files.txt)
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "No relevant files changed"
+            exit 0
+          fi
+
+          echo "Changed files:"
+          cat filtered_files.txt
+
+      - name: Get file diffs
+        id: get-diffs
+        if: steps.changed-files.outputs.file_count > 0
+        run: |
+          # 各ファイルのdiffを取得（最大20ファイル、トークン制限対策）
+          DIFF_OUTPUT=""
+          COUNT=0
+          MAX_FILES=20
+          MAX_TOTAL_SIZE=100000  # 約10万文字（トークン制限対策）
+          TOTAL_SIZE=0
+
+          while IFS= read -r file && [ $COUNT -lt $MAX_FILES ]; do
+            if [ -f "$file" ]; then
+              # git diff の引数をクォートで保護
+              DIFF_CONTENT=$(git diff "origin/${{ github.base_ref }}...HEAD" -- "$file")
+              DIFF_SIZE=${#DIFF_CONTENT}
+
+              # サイズ制限チェック
+              if [ $((TOTAL_SIZE + DIFF_SIZE)) -gt $MAX_TOTAL_SIZE ]; then
+                echo "::warning::Reached size limit ($TOTAL_SIZE bytes). Skipping remaining files."
+                break
+              fi
+
+              echo "Processing: $file (size: $DIFF_SIZE bytes)"
+              DIFF_OUTPUT="${DIFF_OUTPUT}## File: $file"$'\n'
+              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`diff"$'\n'
+              DIFF_OUTPUT="${DIFF_OUTPUT}${DIFF_CONTENT}"$'\n'
+              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`"$'\n'
+              COUNT=$((COUNT + 1))
+              TOTAL_SIZE=$((TOTAL_SIZE + DIFF_SIZE))
+            fi
+          done < filtered_files.txt
+
+          echo "Total diff size: $TOTAL_SIZE bytes across $COUNT files"
+
+          # 結果を一時ファイルに保存
+          echo -e "$DIFF_OUTPUT" > diffs.txt
+
+          echo "Collected diffs for $COUNT files"
+
+      - name: Review with Claude
+        id: claude-review
+        if: steps.changed-files.outputs.file_count > 0
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +x  # デバッグモードを明示的にオフ
+
+          # APIキー存在チェック
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set"
+            exit 1
+          fi
+
+          # レビュープロンプト作成
+          cat > prompt.txt << 'EOF'
+          あなたは経験豊富で現実的なコードレビュアーです。以下のコード変更をレビューしてください。
+
+          ## 絶対に守るべき指針
+          - **現状のコードで実際に問題が発生する場合のみ**指摘してください
+          - 理論的リスクや「もしかしたら」レベルの指摘は**完全に不要**です
+          - プラットフォームの標準機能（例: GitHub Actionsのsecretsマスキング）を理解し、既に保護されているものは指摘しない
+          - 公式ドキュメントで推奨されている実装方法は問題として指摘しない
+          - コードスタイル、命名規則、リファクタリング提案は**一切不要**です
+          - 「より安全な方法」という提案は、現状が**実際に危険な場合のみ**
+
+          ## レビュー観点（厳格な基準）
+          1. **セキュリティ**:
+             - **現時点で実際に攻撃可能**なSQLインジェクション、XSS、認証バイパス
+             - APIキーやパスワードが**実際にログや公開リポジトリに露出している**場合
+             - プラットフォームの保護機能で守られているものは指摘しない
+
+          2. **バグ**:
+             - **確実にエラーやクラッシュを引き起こす**コード、明らかなロジックエラー
+
+          3. **パフォーマンス**:
+             - **明らかに遅くなる**実装（N+1クエリ、無限ループ、メモリリークなど）
+
+          4. **その他**:
+             - 動作を妨げる致命的な問題のみ
+
+          ## 出力形式
+          必ず最初に件数サマリーを表示:
+
+          ## 📊 サマリー
+          - Critical Issues: N件
+          - Warnings: N件
+
+          問題が見つかった場合のみ、以下のセクションを表示:
+
+          ## 🔴 Critical Issues (N件)
+          本番環境で**確実に問題になる**致命的な問題のみ記載。
+          - **ファイル名:行番号** - 簡潔な問題説明と修正案
+
+          ## ⚠️ Warnings (N件)
+          **高確率で問題になる**警告のみ記載。
+          - **ファイル名:行番号** - 簡潔な問題説明
+
+          問題がない場合は:
+          ## 📊 サマリー
+          - Critical Issues: 0件
+          - Warnings: 0件
+
+          ✅ 重大な問題は見つかりませんでした
+
+          ---
+
+          ## コード変更:
+          EOF
+
+          cat diffs.txt >> prompt.txt
+
+          # プロンプトサイズチェック
+          PROMPT_SIZE=$(wc -c < prompt.txt)
+          MAX_PROMPT_SIZE=180000  # 約180KB (安全マージン考慮)
+
+          if [ "$PROMPT_SIZE" -gt "$MAX_PROMPT_SIZE" ]; then
+            echo "::warning::Prompt size ($PROMPT_SIZE bytes) exceeds limit. Truncating..."
+            head -c $MAX_PROMPT_SIZE prompt.txt > prompt_truncated.txt
+            mv prompt_truncated.txt prompt.txt
+            echo -e "\n\n[... コンテンツが切り詰められました ...]" >> prompt.txt
+          fi
+
+          echo "Final prompt size: $(wc -c < prompt.txt) bytes"
+
+          # Claude APIを呼び出し（タイムアウトとリトライ付き）
+          # APIキー露出防止のため、curl実行前に再度デバッグモードをオフ
+          set +x
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o response.json \
+            --max-time 60 \
+            --retry 3 \
+            --retry-delay 5 \
+            https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d @- << EOFCURL
+          {
+            "model": "claude-sonnet-4-5-20250929",
+            "max_tokens": 4096,
+            "messages": [
+              {
+                "role": "user",
+                "content": $(jq -Rs . < prompt.txt)
+              }
+            ]
+          }
+          EOFCURL
+          )
+
+          # HTTPステータスコードチェック
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "::error::Claude API returned status code: $HTTP_CODE"
+            if [ "$HTTP_CODE" -eq 429 ]; then
+              echo "::warning::Rate limit exceeded. Please try again later."
+            elif [ "$HTTP_CODE" -eq 401 ]; then
+              echo "::error::Authentication failed. Please check ANTHROPIC_API_KEY."
+            elif [ "$HTTP_CODE" -eq 000 ]; then
+              echo "::error::Network error or timeout occurred."
+            fi
+            REVIEW="❌ Claude APIエラー (HTTP $HTTP_CODE): ワークフローログを確認してください。"
+            echo "review<<DELIMITER_ERROR" >> $GITHUB_OUTPUT
+            echo "$REVIEW" >> $GITHUB_OUTPUT
+            echo "DELIMITER_ERROR" >> $GITHUB_OUTPUT
+            exit 0  # PRコメントは投稿するがワークフローは失敗させない
+          fi
+
+          RESPONSE=$(cat response.json)
+
+          # レスポンスからレビュー内容を抽出（エラーハンドリング強化）
+          if ! REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text' 2>/dev/null); then
+            echo "::error::Failed to parse Claude API response"
+            REVIEW="❌ レビュー結果の解析に失敗しました。"
+          fi
+
+          # 空レスポンスのチェック
+          if [ -z "$REVIEW" ] || [ "$REVIEW" = "null" ]; then
+            REVIEW="❌ レビュー生成エラー: 空のレスポンス"
+          fi
+
+          # エラーチェック（エラーメッセージをサニタイズ）
+          if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+            ERROR_TYPE=$(echo "$RESPONSE" | jq -r '.error.type // "unknown"')
+            echo "❌ Claude API Error Type: $ERROR_TYPE"
+            REVIEW="❌ Claude APIでエラーが発生しました。ワークフローログを確認してください。"
+            # 詳細なエラーログは GitHub Actions のログにのみ出力（PRコメントには表示しない）
+            echo "::warning::Claude API Error Details: $(echo "$RESPONSE" | jq -c '.error')"
+          fi
+
+          # GitHubの複数行出力フォーマットに対応
+          DELIMITER="REVIEW_CONTENT_$(date +%s)"
+          echo "review<<${DELIMITER}" >> $GITHUB_OUTPUT
+          echo "$REVIEW" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
+
+      - name: Post review comment
+        if: steps.changed-files.outputs.file_count > 0
+        uses: actions/github-script@v7
+        env:
+          REVIEW_CONTENT: ${{ steps.claude-review.outputs.review }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const review = process.env.REVIEW_CONTENT;
+            const body = `## 🤖 AI Code Review by Claude\n\n${review}\n\n---\n*Powered by Claude 3.5 Sonnet*`;
+
+            // 既存のボットコメントを検索
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('🤖 AI Code Review by Claude')
+            );
+
+            if (botComment) {
+              // 既存コメントを更新
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              // 新規コメント投稿
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
