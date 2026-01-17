@@ -57,10 +57,12 @@ jobs:
           while IFS= read -r file && [ $COUNT -lt $MAX_FILES ]; do
             if [ -f "$file" ]; then
               echo "Processing: $file"
-              DIFF_OUTPUT="${DIFF_OUTPUT}\n\n## File: $file\n"
-              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`diff\n"
-              DIFF_OUTPUT="${DIFF_OUTPUT}$(git diff origin/${{ github.base_ref }}...HEAD -- "$file")\n"
-              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`\n"
+              DIFF_OUTPUT="${DIFF_OUTPUT}## File: $file"$'\n'
+              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`diff"$'\n'
+              # git diff の引数をクォートで保護
+              DIFF_CONTENT=$(git diff "origin/${{ github.base_ref }}...HEAD" -- "$file")
+              DIFF_OUTPUT="${DIFF_OUTPUT}${DIFF_CONTENT}"$'\n'
+              DIFF_OUTPUT="${DIFF_OUTPUT}\`\`\`"$'\n'
               COUNT=$((COUNT + 1))
             fi
           done < filtered_files.txt
@@ -136,19 +138,16 @@ jobs:
           EOFCURL
           )
 
-          # デバッグ: APIレスポンスを出力
-          echo "=== Claude API Response ==="
-          echo "$RESPONSE" | jq '.' || echo "$RESPONSE"
-          echo "==========================="
-
           # レスポンスからレビュー内容を抽出
           REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "❌ レビュー生成エラー"')
 
-          # エラーチェック
+          # エラーチェック（エラーメッセージをサニタイズ）
           if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
-            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message // .error.type')
-            echo "❌ Claude API Error: $ERROR_MSG"
-            REVIEW="❌ Claude APIエラー: $ERROR_MSG"
+            ERROR_TYPE=$(echo "$RESPONSE" | jq -r '.error.type // "unknown"')
+            echo "❌ Claude API Error Type: $ERROR_TYPE"
+            REVIEW="❌ Claude APIでエラーが発生しました。ワークフローログを確認してください。"
+            # 詳細なエラーログは GitHub Actions のログにのみ出力（PRコメントには表示しない）
+            echo "::warning::Claude API Error Details: $(echo "$RESPONSE" | jq -c '.error')"
           fi
 
           # GitHubの複数行出力フォーマットに対応
