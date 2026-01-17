@@ -159,10 +159,12 @@ jobs:
       - name: Post review comment
         if: steps.changed-files.outputs.file_count > 0
         uses: actions/github-script@v7
+        env:
+          REVIEW_CONTENT: ${{ steps.claude-review.outputs.review }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const review = `${{ steps.claude-review.outputs.review }}`;
+            const review = process.env.REVIEW_CONTENT;
             const body = `## 🤖 AI Code Review by Claude\n\n${review}\n\n---\n*Powered by Claude 3.5 Sonnet*`;
 
             // 既存のボットコメントを検索
