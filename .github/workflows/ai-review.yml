@@ -136,8 +136,20 @@ jobs:
           EOFCURL
           )
 
+          # デバッグ: APIレスポンスを出力
+          echo "=== Claude API Response ==="
+          echo "$RESPONSE" | jq '.' || echo "$RESPONSE"
+          echo "==========================="
+
           # レスポンスからレビュー内容を抽出
           REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "❌ レビュー生成エラー"')
+
+          # エラーチェック
+          if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message // .error.type')
+            echo "❌ Claude API Error: $ERROR_MSG"
+            REVIEW="❌ Claude APIエラー: $ERROR_MSG"
+          fi
 
           # GitHubの複数行出力フォーマットに対応
           echo "review<<EOF" >> $GITHUB_OUTPUT
